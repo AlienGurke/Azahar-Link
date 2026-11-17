@@ -78,9 +78,15 @@ void IR_RST::UpdateCallback(std::uintptr_t user_data, s64 cycles_late) {
     PadState state;
     s16 c_stick_x, c_stick_y;
 
+    std::optional<Service::HID::ArticBaseController::ControllerData> external;
     if (artic_controller.get() && artic_controller->IsReady()) {
-        Service::HID::ArticBaseController::ControllerData data =
-            artic_controller->GetControllerData();
+        external = artic_controller->GetControllerData();
+    } else {
+        external = Service::HID::LinkController::Get();
+    }
+
+    if (external) {
+        Service::HID::ArticBaseController::ControllerData data = *external;
 
         state.hex = data.pad & VALID_EXTRAHID_KEYS;
 

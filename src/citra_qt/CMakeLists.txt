@@ -29,6 +29,11 @@ add_library(citra_qt STATIC EXCLUDE_FROM_ALL
     camera/qt_multimedia_camera.h
     citra_qt.cpp
     citra_qt.h
+    link/LinkProto.h
+    link/link_client.cpp
+    link/link_client.h
+    link/link_ui.cpp
+    link/link_ui.h
     configuration/config.cpp
     configuration/config.h
     configuration/configure.ui
@@ -305,6 +310,9 @@ target_link_libraries(citra_qt PRIVATE audio_core citra_common citra_core input_
 target_link_libraries(citra_qt PUBLIC Boost::boost Qt6::Widgets)
 target_link_libraries(citra_qt PRIVATE nihstro-headers Qt6::Multimedia Qt6::Concurrent)
 target_link_libraries(citra_qt PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+if (WIN32)
+    target_link_libraries(citra_qt PRIVATE ws2_32)
+endif()
 
 if (MINGW)
     target_link_libraries(citra_qt PRIVATE dwmapi)

@@ -3,6 +3,7 @@
 // Refer to the LICENSE.txt file included.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <numeric>
 #include <boost/serialization/array.hpp>
@@ -82,6 +83,36 @@ ArticBaseController::ControllerData ArticBaseController::GetControllerData() {
     return last_controller_data;
 }
 
+namespace LinkController {
+namespace {
+std::mutex link_mutex;
+ArticBaseController::ControllerData link_data{};
+std::chrono::steady_clock::time_point link_time{};
+bool link_valid = false;
+} // namespace
+
+void Set(const ArticBaseController::ControllerData& data) {
+    std::scoped_lock lock{link_mutex};
+    link_data = data;
+    link_time = std::chrono::steady_clock::now();
+    link_valid = true;
+}
+
+void Clear() {
+    std::scoped_lock lock{link_mutex};
+    link_valid = false;
+}
+
+std::optional<ArticBaseController::ControllerData> Get() {
+    std::scoped_lock lock{link_mutex};
+    if (!link_valid ||
+        std::chrono::steady_clock::now() - link_time > std::chrono::milliseconds(500)) {
+        return std::nullopt;
+    }
+    return link_data;
+}
+} // namespace LinkController
+
 constexpr float accelerometer_coef = 512.0f; // measured from hw test result
 constexpr float gyroscope_coef = 14.375f; // got from hwtest GetGyroscopeLowRawToDpsCoefficient call
 
@@ -149,11 +180,18 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
 
     using namespace Settings::NativeButton;
 
+    std::optional<ArticBaseController::ControllerData> external;
     if (artic_controller.get() && artic_controller->IsReady()) {
+        external = artic_controller->GetControllerData();
+    } else {
+        external = LinkController::Get();
+    }
+
+    if (external) {
         constexpr u32 HID_VALID_KEYS = 0xF0003FFF;
         constexpr u32 LIBCTRU_TOUCH_KEY = (1 << 20);
 
-        ArticBaseController::ControllerData data = artic_controller->GetControllerData();
+        ArticBaseController::ControllerData data = *external;
 
         state.hex = data.pad & HID_VALID_KEYS;
 

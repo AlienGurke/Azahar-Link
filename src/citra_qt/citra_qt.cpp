@@ -72,6 +72,7 @@
 #endif
 #include "citra_qt/game_list.h"
 #include "citra_qt/hotkeys.h"
+#include "citra_qt/link/link_ui.h"
 #include "citra_qt/loading_screen.h"
 #include "citra_qt/movie/movie_play_dialog.h"
 #include "citra_qt/movie/movie_record_dialog.h"
@@ -467,6 +468,9 @@ GMainWindow::GMainWindow(Core::System& system_)
     ConnectAppEvents();
     ConnectMenuEvents();
     ConnectWidgetEvents();
+
+    // 3DS Link: a real 3DS as controller and bottom screen (menu, status, connection)
+    new Link::LinkUi(this);
 
     LOG_INFO(Frontend, "Azahar Version: {} | {}-{}", Common::g_build_fullname, Common::g_scm_branch,
              Common::g_scm_desc);

@@ -1,0 +1,141 @@
+// Copyright Azahar-Link contributors
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
+
+// 3DS Link: a real (modded) 3DS running the 3DS-Link app is the controller for
+// Azahar: its buttons, circle pad, C-stick and touch screen go to the game, and
+// the game's bottom screen is shown on the 3DS.
+//
+// One global client. A worker thread keeps the TCP control connection and the
+// UDP input stream alive and hands every input packet to the HID service; a
+// second thread sends the bottom screen. Nothing here blocks the emulation.
+// The protocol is shared with the 3DS app and melonDS-Link (LinkProto.h).
+
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "citra_qt/link/LinkProto.h"
+
+namespace Link {
+
+enum class State {
+    Disconnected,
+    Connecting,
+    Connected,
+};
+
+class Client {
+public:
+    Client();
+    ~Client();
+
+    /// Starts connecting in the background (returns at once). Keeps reconnecting
+    /// until Disconnect, e.g. after the 3DS was closed and opened again.
+    void Connect(const std::string& host);
+    void Disconnect();
+
+    State GetState() const {
+        return state.load();
+    }
+    std::string GetHost();
+
+    /// Messages for the user (connected, lost, ...), oldest first.
+    bool PopMessage(std::string& msg);
+
+    /// State of the console (kept after the connection is gone).
+    struct ConsoleState {
+        bool known = false;
+        int battery = -1; // percent, -1 = unknown
+        int wifi = -1;    // 0..3, -1 = unknown
+        bool charging = false;
+        bool lid_closed = false;
+    };
+    ConsoleState GetConsoleState();
+
+    /// The user turned the picture on the 3DS off (setting in the 3DS app).
+    bool VideoWanted() const {
+        return video_wanted.load();
+    }
+
+private:
+    void Worker(std::string host);
+    void VideoWorker();
+    bool Request(uint16_t cmd, const void* payload, uint32_t len, uint16_t& status,
+                 std::vector<uint8_t>* out = nullptr);
+    int TryRequest(uint16_t cmd, const void* payload, uint32_t len, uint16_t& status,
+                   std::vector<uint8_t>* out = nullptr);
+    bool RequestLocked(uint16_t cmd, const void* payload, uint32_t len, uint16_t& status,
+                       std::vector<uint8_t>* out);
+    int PollEvents();
+    void PushMessage(const std::string& msg);
+    void CloseSockets();
+    void UpdateCapture();
+
+    // video
+    void ProcessAcks();
+    void SendTiles(const std::vector<uint16_t>& frame);
+
+    std::atomic<State> state{State::Disconnected};
+    std::atomic<bool> stop_requested{false};
+    std::thread thread;
+    std::thread video_thread;
+
+    std::mutex host_mutex;
+    std::string current_host;
+
+    std::mutex msg_mutex;
+    std::deque<std::string> messages;
+
+    std::mutex console_mutex;
+    ConsoleState console;
+    uint32_t last_packet_id = 0;
+    bool have_packet = false;
+
+    std::atomic<bool> video_wanted{true}; // bottom screen picture on (3DS setting)
+    std::atomic<bool> lid_closed{false};  // closed: nobody sees the picture
+    std::atomic<bool> video_resync{true}; // resend everything (new connection)
+
+    // video: what the 3DS should show
+    std::mutex video_mutex; // guards the receipts below
+    std::vector<uint16_t> shown_source;
+    std::vector<uint8_t> tile_level; // 0 exact, 1 half, 2 quarter, 255 unknown -> resend
+    std::vector<uint16_t> last_frame;
+    struct SentPacket {
+        uint32_t seq;
+        int64_t sent_ms;
+        std::vector<uint16_t> tiles;
+    };
+    std::deque<SentPacket> in_flight;
+    uint32_t video_frame_id = 0;
+    uint32_t video_seq = 0;
+    uint32_t refresh_cursor = 0;
+    uint32_t scan_start = 0;
+    double budget_bytes = 24 * 1024;
+    uint32_t stat_received = 0, stat_lost = 0;
+    bool ack_new = false;
+    bool ack_valid = false;
+    uint32_t ack_seq = 0;
+    uint64_t ack_mask = 0;
+    uint8_t video_addr[16] = {}; // sockaddr_in of the 3DS video port
+    std::atomic<bool> have_video_addr{false};
+
+    std::mutex req_mutex; // serialises requests
+    std::mutex udp_mutex; // keeps udp_sock alive for the video sender
+    intptr_t tcp_sock = -1;
+    intptr_t udp_sock = -1;
+    uint32_t seq = 1;
+};
+
+Client& Get();
+
+/// A text in the language of Azahar's interface (German or English).
+std::string Text(const char* key);
+
+} // namespace Link

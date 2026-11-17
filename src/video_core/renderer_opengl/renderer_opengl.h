@@ -60,6 +60,8 @@ private:
     void PrepareRendertarget();
     void LimitFramesAheadOfGpu() override;
     void RenderScreenshot();
+    void RenderLinkCapture();
+    void ReleaseLinkCapture();
     void RenderToMailbox(const Layout::FramebufferLayout& layout,
                          std::unique_ptr<Frontend::TextureMailbox>& mailbox, bool flipped);
     void ConfigureFramebufferTexture(TextureInfo& texture,
@@ -93,6 +95,13 @@ private:
     OGLBuffer vertex_buffer;
     OGLProgram shader;
     OGLFramebuffer screenshot_framebuffer;
+
+    // 3DS Link: bottom screen for the 3DS app, read back through two pixel buffers
+    OGLFramebuffer link_framebuffer;
+    GLuint link_renderbuffer = 0;
+    std::array<GLuint, 2> link_pbos{};
+    std::array<GLsync, 2> link_fences{};
+    u32 link_slot = 0;
     std::array<OGLSampler, 2> samplers;
 
     // Display information for top and bottom screens respectively

@@ -159,6 +159,8 @@ RendererVulkan::~RendererVulkan() {
     device.destroyPipeline(cursor_pipeline);
     device.destroyShaderModule(cursor_vertex_shader);
     device.destroyShaderModule(cursor_fragment_shader);
+
+    ReleaseLinkCapture();
 }
 
 void RendererVulkan::PrepareRendertarget() {
@@ -1174,6 +1176,8 @@ void RendererVulkan::SwapBuffers() {
         secondary_window->PollEvents();
     }
 #endif
+    RenderLinkCapture();
+
     if (!screenRendered) {
         scheduler.Finish();
     }
@@ -1200,6 +1204,140 @@ void RendererVulkan::RenderScreenshot() {
     }
 
     settings.screenshot_complete_callback(false);
+}
+
+void RendererVulkan::RenderLinkCapture() {
+    auto& capture = VideoCore::GetLinkCapture();
+    constexpr u32 width = VideoCore::LinkCapture::Width;
+    constexpr u32 height = VideoCore::LinkCapture::Height;
+    constexpr vk::DeviceSize size = width * height * 4;
+
+    // hand over the pictures the GPU has finished meanwhile (never wait for it)
+    const bool bgra = main_present_window.GetSurfaceFormat() != vk::Format::eR8G8B8A8Unorm;
+    for (auto& buf : link_buffers) {
+        if (buf.pending && scheduler.IsFree(buf.tick)) {
+            vmaInvalidateAllocation(instance.GetAllocator(), buf.allocation, 0, VK_WHOLE_SIZE);
+            capture.Submit(buf.mapped, bgra, false);
+            buf.pending = false;
+        }
+    }
+
+    if (!capture.IsEnabled()) {
+        if (link_frame.image && !link_buffers[0].pending && !link_buffers[1].pending) {
+            scheduler.Finish();
+            ReleaseLinkCapture();
+        }
+        return;
+    }
+    LinkBuffer& buf = link_buffers[link_slot];
+    if (buf.pending) {
+        return; // the GPU is still behind; skip this frame
+    }
+
+    if (!link_frame.image) {
+        main_present_window.RecreateFrame(&link_frame, width, height);
+    }
+    if (!buf.buffer) {
+        const VkBufferCreateInfo buffer_info = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        };
+        const VmaAllocationCreateInfo alloc_create_info = {
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                     VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        };
+        VmaAllocationInfo alloc_info{};
+        if (vmaCreateBuffer(instance.GetAllocator(), &buffer_info, &alloc_create_info, &buf.buffer,
+                            &buf.allocation, &alloc_info) != VK_SUCCESS) {
+            LOG_ERROR(Render_Vulkan, "3DS Link: could not create the readback buffer");
+            buf.buffer = VK_NULL_HANDLE;
+            capture.SetEnabled(false);
+            return;
+        }
+        buf.mapped = alloc_info.pMappedData;
+    }
+
+    const Layout::FramebufferLayout layout =
+        VideoCore::LinkCapture::MakeLayout(render_window.GetFramebufferLayout());
+    DrawScreens(&link_frame, layout, false);
+
+    scheduler.Record([source_image = link_frame.image,
+                      staging_buffer = vk::Buffer{buf.buffer}](vk::CommandBuffer cmdbuf) {
+        const vk::ImageSubresourceRange range{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = 0,
+            .levelCount = VK_REMAINING_MIP_LEVELS,
+            .baseArrayLayer = 0,
+            .layerCount = VK_REMAINING_ARRAY_LAYERS,
+        };
+        const vk::ImageMemoryBarrier read_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = source_image,
+            .subresourceRange = range,
+        };
+        const vk::BufferImageCopy image_copy = {
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource =
+                {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .mipLevel = 0,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {width, height, 1},
+        };
+        const vk::BufferMemoryBarrier host_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eHostRead,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = staging_buffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        };
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                               vk::PipelineStageFlagBits::eTransfer,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, read_barrier);
+        cmdbuf.copyImageToBuffer(source_image, vk::ImageLayout::eTransferSrcOptimal,
+                                 staging_buffer, image_copy);
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eHost, vk::DependencyFlagBits::eByRegion,
+                               {}, host_barrier, {});
+    });
+
+    buf.tick = scheduler.CurrentTick();
+    buf.pending = true;
+    link_slot = (link_slot + 1) % link_buffers.size();
+}
+
+void RendererVulkan::ReleaseLinkCapture() {
+    const vk::Device device = instance.GetDevice();
+    for (auto& buf : link_buffers) {
+        if (buf.buffer) {
+            vmaDestroyBuffer(instance.GetAllocator(), buf.buffer, buf.allocation);
+        }
+        buf = {};
+    }
+    if (link_frame.framebuffer) {
+        device.destroyFramebuffer(link_frame.framebuffer);
+    }
+    if (link_frame.image_view) {
+        device.destroyImageView(link_frame.image_view);
+    }
+    if (link_frame.image) {
+        vmaDestroyImage(instance.GetAllocator(), link_frame.image, link_frame.allocation);
+    }
+    link_frame = {};
 }
 
 void RendererVulkan::RenderScreenshotWithStagingCopy() {

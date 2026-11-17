@@ -4,6 +4,11 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <vector>
 #include "common/common_types.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "video_core/rasterizer_interface.h"
@@ -23,6 +28,46 @@ enum class ScreenId : u32 {
     TopRight,
     Bottom,
 };
+
+/**
+ * 3DS Link: the bottom screen at its native size for the 3DS app, which shows it on the
+ * real console. While enabled, the renderer draws it into a small extra target after each
+ * presented frame and reads it back without waiting for the GPU (it arrives a frame or two
+ * later). The Link client takes the newest picture from its own thread.
+ */
+class LinkCapture {
+public:
+    static constexpr u32 Width = 320;
+    static constexpr u32 Height = 240;
+
+    void SetEnabled(bool on) {
+        enabled = on;
+    }
+    [[nodiscard]] bool IsEnabled() const {
+        return enabled;
+    }
+
+    /// The layout the renderers draw the picture with (based on the window's layout, so
+    /// the 3D mode and the like stay the same).
+    static Layout::FramebufferLayout MakeLayout(const Layout::FramebufferLayout& base);
+
+    /// Renderer thread: hands over a picture, 4 bytes per pixel.
+    /// bgra: bytes B,G,R,A (else R,G,B,A). bottom_up: the first row is the bottom one.
+    void Submit(const void* pixels, bool bgra, bool bottom_up);
+
+    /// Client thread: waits up to `timeout` for a picture newer than `seq`. On success
+    /// `rgb565` gets Width * Height pixels (rows top to bottom) and `seq` is updated.
+    bool Take(std::vector<u16>& rgb565, u64& seq, std::chrono::milliseconds timeout);
+
+private:
+    std::atomic_bool enabled{false};
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<u16> latest;
+    u64 latest_seq = 0;
+};
+
+LinkCapture& GetLinkCapture();
 
 struct RendererSettings {
     // Screenshot

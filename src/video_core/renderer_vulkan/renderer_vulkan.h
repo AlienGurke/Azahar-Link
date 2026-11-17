@@ -94,6 +94,8 @@ private:
     void PrepareRendertarget();
     void LimitFramesAheadOfGpu() override;
     void RenderScreenshot();
+    void RenderLinkCapture();
+    void ReleaseLinkCapture();
     void RenderScreenshotWithStagingCopy();
     bool TryRenderScreenshotWithHostMemory();
     void PrepareDraw(Frame* frame, const Layout::FramebufferLayout& layout);
@@ -135,6 +137,18 @@ private:
     DescriptorUpdateQueue update_queue;
     RasterizerVulkan rasterizer;
     std::unique_ptr<PresentWindow> secondary_present_window_ptr;
+
+    // 3DS Link: bottom screen for the 3DS app, copied into host memory without waiting
+    struct LinkBuffer {
+        VkBuffer buffer{};
+        VmaAllocation allocation{};
+        void* mapped{};
+        u64 tick{};
+        bool pending{};
+    };
+    Frame link_frame{};
+    std::array<LinkBuffer, 2> link_buffers{};
+    u32 link_slot = 0;
     DescriptorHeap present_heap;
     vk::UniquePipelineLayout present_pipeline_layout;
     std::array<vk::Pipeline, PRESENT_PIPELINES> present_pipelines;

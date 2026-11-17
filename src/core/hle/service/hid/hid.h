@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 #include <boost/serialization/version.hpp>
 #include "common/bit_field.h"
@@ -235,6 +236,16 @@ private:
     u32 last_packet_id{};
     ControllerData last_controller_data{};
 };
+
+/// Input from the 3DS Link app: a real 3DS used as the controller (buttons, circle pad,
+/// C-stick, ZL/ZR and the touch screen). The frontend sets it for every packet that
+/// arrives; without a new one for half a second it counts as gone and the configured
+/// input devices are used again. Artic Base's controller, when connected, comes first.
+namespace LinkController {
+void Set(const ArticBaseController::ControllerData& data);
+void Clear();
+std::optional<ArticBaseController::ControllerData> Get();
+} // namespace LinkController
 
 class Module final {
 public:

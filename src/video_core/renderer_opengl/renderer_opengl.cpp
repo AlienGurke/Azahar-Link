@@ -140,6 +140,8 @@ void RendererOpenGL::SwapBuffers() {
         Core::PerfStats::game_frames_updated = false;
     }
 
+    RenderLinkCapture();
+
     // The video dumper must receive exactly one frame per swap regardless of the "Skip Presenting
     // Duplicate Frames" setting.
     if (frame_dumper.IsDumping()) {
@@ -198,6 +200,92 @@ void RendererOpenGL::RenderScreenshot() {
 
         settings.screenshot_complete_callback(true);
     }
+}
+
+void RendererOpenGL::RenderLinkCapture() {
+    auto& capture = VideoCore::GetLinkCapture();
+    constexpr u32 width = VideoCore::LinkCapture::Width;
+    constexpr u32 height = VideoCore::LinkCapture::Height;
+    constexpr GLsizeiptr size = width * height * 4;
+
+    // hand over the pictures the GPU has finished meanwhile (never wait for it)
+    for (u32 i = 0; i < link_fences.size(); i++) {
+        if (!link_fences[i]) {
+            continue;
+        }
+        const GLenum result = glClientWaitSync(link_fences[i], 0, 0);
+        if (result != GL_ALREADY_SIGNALED && result != GL_CONDITION_SATISFIED) {
+            continue;
+        }
+        glDeleteSync(link_fences[i]);
+        link_fences[i] = nullptr;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, link_pbos[i]);
+        if (const void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, size, GL_MAP_READ_BIT)) {
+            capture.Submit(pixels, true, true);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
+
+    if (!capture.IsEnabled()) {
+        if (link_renderbuffer && !link_fences[0] && !link_fences[1]) {
+            ReleaseLinkCapture();
+        }
+        return;
+    }
+    if (link_fences[link_slot]) {
+        return; // the GPU is still behind; skip this frame
+    }
+
+    if (!link_renderbuffer) {
+        link_framebuffer.Create();
+        glGenRenderbuffers(1, &link_renderbuffer);
+        glBindRenderbuffer(GL_RENDERBUFFER, link_renderbuffer);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
+        glGenBuffers(static_cast<GLsizei>(link_pbos.size()), link_pbos.data());
+        for (const GLuint pbo : link_pbos) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+            glBufferData(GL_PIXEL_PACK_BUFFER, size, nullptr, GL_STREAM_READ);
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
+
+    const GLuint old_read_fb = state.draw.read_framebuffer;
+    const GLuint old_draw_fb = state.draw.draw_framebuffer;
+    state.draw.read_framebuffer = state.draw.draw_framebuffer = link_framebuffer.handle;
+    state.Apply();
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
+                              link_renderbuffer);
+
+    DrawScreens(VideoCore::LinkCapture::MakeLayout(render_window.GetFramebufferLayout()), false);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, link_pbos[link_slot]);
+    glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    link_fences[link_slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    link_slot = (link_slot + 1) % link_fences.size();
+
+    state.draw.read_framebuffer = old_read_fb;
+    state.draw.draw_framebuffer = old_draw_fb;
+    state.Apply();
+}
+
+void RendererOpenGL::ReleaseLinkCapture() {
+    for (auto& fence : link_fences) {
+        if (fence) {
+            glDeleteSync(fence);
+            fence = nullptr;
+        }
+    }
+    if (link_pbos[0]) {
+        glDeleteBuffers(static_cast<GLsizei>(link_pbos.size()), link_pbos.data());
+        link_pbos = {};
+    }
+    if (link_renderbuffer) {
+        glDeleteRenderbuffers(1, &link_renderbuffer);
+        link_renderbuffer = 0;
+    }
+    link_framebuffer.Release();
 }
 
 void RendererOpenGL::PrepareRendertarget() {

@@ -12,6 +12,57 @@
 
 namespace VideoCore {
 
+LinkCapture& GetLinkCapture() {
+    static LinkCapture capture;
+    return capture;
+}
+
+Layout::FramebufferLayout LinkCapture::MakeLayout(const Layout::FramebufferLayout& base) {
+    Layout::FramebufferLayout layout = base;
+    layout.width = Width;
+    layout.height = Height;
+    layout.top_screen_enabled = false;
+    layout.bottom_screen_enabled = true;
+    layout.top_screen = {0, 0, 0, 0};
+    layout.bottom_screen = {0, 0, Width, Height};
+    layout.is_rotated = true;
+    layout.additional_screen_enabled = false;
+    layout.top_opacity = 1.0f;
+    layout.bottom_opacity = 1.0f;
+    return layout;
+}
+
+void LinkCapture::Submit(const void* pixels, bool bgra, bool bottom_up) {
+    const u8* src = static_cast<const u8*>(pixels);
+    std::vector<u16> out(Width * Height);
+    const u32 r_off = bgra ? 2 : 0;
+    const u32 b_off = bgra ? 0 : 2;
+    for (u32 y = 0; y < Height; y++) {
+        const u8* row = src + (bottom_up ? Height - 1 - y : y) * Width * 4;
+        u16* dst = out.data() + y * Width;
+        for (u32 x = 0; x < Width; x++) {
+            const u8* p = row + x * 4;
+            dst[x] = static_cast<u16>(((p[r_off] >> 3) << 11) | ((p[1] >> 2) << 5) | (p[b_off] >> 3));
+        }
+    }
+    {
+        std::scoped_lock lock{mutex};
+        latest = std::move(out);
+        latest_seq++;
+    }
+    cv.notify_all();
+}
+
+bool LinkCapture::Take(std::vector<u16>& rgb565, u64& seq, std::chrono::milliseconds timeout) {
+    std::unique_lock lock{mutex};
+    if (!cv.wait_for(lock, timeout, [&] { return latest_seq != seq && !latest.empty(); })) {
+        return false;
+    }
+    rgb565 = latest;
+    seq = latest_seq;
+    return true;
+}
+
 RendererBase::RendererBase(Core::System& system_, Frontend::EmuWindow& window,
                            Frontend::EmuWindow* secondary_window_)
     : system{system_}, render_window{window}, secondary_window{secondary_window_} {}

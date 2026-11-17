@@ -241,9 +241,15 @@ void ExtraHID::SendHIDStatus() {
 
     ExtraHIDResponse response{};
 
+    std::optional<Service::HID::ArticBaseController::ControllerData> external;
     if (artic_controller.get() && artic_controller->IsReady()) {
-        Service::HID::ArticBaseController::ControllerData data =
-            artic_controller->GetControllerData();
+        external = artic_controller->GetControllerData();
+    } else {
+        external = Service::HID::LinkController::Get();
+    }
+
+    if (external) {
+        Service::HID::ArticBaseController::ControllerData data = *external;
 
         constexpr int MAX_CSTICK_RADIUS = 0x9C; // Max value for a c-stick radius
 
