@@ -38,6 +38,7 @@ private:
     QAction* auto_action;
     QLabel* status_label;
     QTimer* timer;
+    bool game_running = false;
 };
 
 } // namespace Link

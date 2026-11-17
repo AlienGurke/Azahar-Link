@@ -263,6 +263,29 @@ bool Client::PopMessage(std::string& msg) {
     return true;
 }
 
+void Client::SetGameName(const std::string& name) {
+    std::scoped_lock lock{session_mutex};
+    if (name != game_name) {
+        game_name = name;
+        session_dirty = true;
+    }
+}
+
+// tell the 3DS which game runs (never waits for a busy connection)
+void Client::SendSession() {
+    std::vector<uint8_t> payload(1, 0);
+    {
+        std::scoped_lock lock{session_mutex};
+        payload.insert(payload.end(), game_name.begin(), game_name.end());
+    }
+    session_dirty = false;
+    uint16_t status = 0;
+    if (TryRequest(LINK_CMD_SESSION, payload.data(), static_cast<uint32_t>(payload.size()),
+                   status) != 1) {
+        session_dirty = true; // try again in a moment
+    }
+}
+
 Client::ConsoleState Client::GetConsoleState() {
     std::scoped_lock lock{console_mutex};
     return console;
@@ -450,6 +473,7 @@ void Client::Worker(std::string host) {
             Request(LINK_CMD_STATUSTEXT, text.data(), static_cast<uint32_t>(text.size()), st);
         }
 
+        session_dirty = true;
         int64_t last_hello = 0;
         int64_t last_ping = NowMs();
         bool lost_by_lid = false;
@@ -467,6 +491,9 @@ void Client::Worker(std::string host) {
                     break;
                 }
                 last_ping = t;
+                if (session_dirty) {
+                    SendSession();
+                }
             }
             // closed: it goes to sleep. Drop the connection now and keep knocking,
             // so it is back as soon as the 3DS is opened again

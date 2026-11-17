@@ -15,6 +15,8 @@
 #include "citra_qt/link/link_client.h"
 #include "citra_qt/link/link_ui.h"
 #include "common/file_util.h"
+#include "core/core.h"
+#include "core/loader/loader.h"
 
 namespace Link {
 
@@ -92,6 +94,18 @@ void LinkUi::OnAutoConnect(bool on) {
 
 void LinkUi::Poll() {
     Client& client = Get();
+
+    // the running game, for the 3DS app
+    Core::System& system = Core::System::GetInstance();
+    const bool running = system.IsPoweredOn();
+    if (running != game_running) {
+        game_running = running;
+        std::string title;
+        if (running) {
+            system.GetAppLoader().ReadTitle(title, true);
+        }
+        client.SetGameName(title);
+    }
 
     std::string msg;
     while (client.PopMessage(msg)) {
