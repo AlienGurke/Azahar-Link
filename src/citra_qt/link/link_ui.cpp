@@ -124,11 +124,18 @@ void LinkUi::Poll() {
     // the 3DS clock: Azahar's clock offset is set so its games see the same time
     int64_t delta = 0;
     if (client.TakeConsoleClock(delta)) {
-        // Azahar's console clock is UTC (+1 h in daylight saving time) + the offset
+        // Azahar's console clock (kernel/shared_page.cpp) is the UTC time + 1 h in daylight
+        // saving time + the offset, counted from 1 Jan 2000 in local time (std::mktime) -
+        // which adds the time zone. The same sums here, so the offset makes it the 3DS clock.
         const std::time_t now = std::time(nullptr);
         const std::tm* local = std::localtime(&now);
         const int64_t dst = (local && local->tm_isdst > 0) ? 3600 : 0;
-        const int64_t offset = delta - dst;
+        std::tm epoch_tm{};
+        epoch_tm.tm_mday = 1;
+        epoch_tm.tm_year = 100;
+        epoch_tm.tm_isdst = 0;
+        const int64_t zone = 946684800LL - static_cast<int64_t>(std::mktime(&epoch_tm));
+        const int64_t offset = delta - dst - zone;
         const bool clock_changes =
             Settings::values.init_clock.GetValue() != Settings::InitClock::SystemTime ||
             std::abs(Settings::values.init_time_offset.GetValue() - offset) > 2;
