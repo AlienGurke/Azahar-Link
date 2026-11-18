@@ -9,6 +9,7 @@
 #pragma once
 
 #include <QObject>
+#include <QStringList>
 
 class QAction;
 class QLabel;
@@ -39,6 +40,10 @@ private:
     QLabel* status_label;
     QTimer* timer;
     bool game_running = false;
+    // messages are shown one after the other, each for a few seconds
+    QStringList queued;
+    qint64 shown_until = 0;
+    void ShowQueued();
 };
 
 } // namespace Link

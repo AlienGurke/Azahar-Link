@@ -46,15 +46,9 @@ static std::chrono::seconds GetInitTime(u64 override_init_time) {
         if (now_tm && now_tm->tm_isdst > 0)
             now = now + std::chrono::hours(1);
 
-        // add the offset
-        s64 init_time_offset = Settings::values.init_time_offset.GetValue();
-        long long days_offset = init_time_offset / 86400;
-        long long days_offset_in_seconds = days_offset * 86400; // h/m/s truncated
-        unsigned long long seconds_offset =
-            std::abs(init_time_offset) - std::abs(days_offset_in_seconds);
-
-        now = now + std::chrono::seconds(seconds_offset);
-        now = now + std::chrono::seconds(days_offset_in_seconds);
+        // add the offset (as a whole: splitting it into days and the rest turned
+        // negative offsets of less than a day into positive ones)
+        now = now + std::chrono::seconds(Settings::values.init_time_offset.GetValue());
         return std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch());
     }
     case Settings::InitClock::FixedTime:

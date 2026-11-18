@@ -14,7 +14,10 @@
 
 #include "citra_qt/link/link_client.h"
 #include "citra_qt/link/link_ui.h"
+#include <ctime>
+#include <QDateTime>
 #include "common/file_util.h"
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/loader/loader.h"
 
@@ -94,6 +97,15 @@ void LinkUi::OnAutoConnect(bool on) {
     settings->setValue(QStringLiteral("autoconnect"), on);
 }
 
+void LinkUi::ShowQueued() {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (queued.isEmpty() || now < shown_until) {
+        return;
+    }
+    window->statusBar()->showMessage(queued.takeFirst(), 7000);
+    shown_until = now + 7000;
+}
+
 void LinkUi::Poll() {
     Client& client = Get();
 
@@ -109,10 +121,33 @@ void LinkUi::Poll() {
         client.SetGameName(title);
     }
 
+    // the 3DS clock: Azahar's clock offset is set so its games see the same time
+    int64_t delta = 0;
+    if (client.TakeConsoleClock(delta)) {
+        // Azahar's console clock is UTC (+1 h in daylight saving time) + the offset
+        const std::time_t now = std::time(nullptr);
+        const std::tm* local = std::localtime(&now);
+        const int64_t dst = (local && local->tm_isdst > 0) ? 3600 : 0;
+        const int64_t offset = delta - dst;
+        const bool clock_changes =
+            Settings::values.init_clock.GetValue() != Settings::InitClock::SystemTime ||
+            std::abs(Settings::values.init_time_offset.GetValue() - offset) > 2;
+        if (clock_changes) {
+            Settings::values.init_clock = Settings::InitClock::SystemTime;
+            Settings::values.init_time_offset = offset;
+            const QString when = QDateTime::fromSecsSinceEpoch(
+                                     QDateTime::currentSecsSinceEpoch() + delta, Qt::UTC)
+                                     .toString(QStringLiteral("dd.MM.yyyy HH:mm"));
+            const std::string key = system.IsPoweredOn() ? "clock_restart" : "clock_set";
+            queued.append(Q(key.c_str()).replace(QStringLiteral("%1"), when));
+        }
+    }
+
     std::string msg;
     while (client.PopMessage(msg)) {
-        window->statusBar()->showMessage(QString::fromStdString(msg), 10000);
+        queued.append(QString::fromStdString(msg));
     }
+    ShowQueued();
 
     const State state = client.GetState();
     disconnect_action->setEnabled(state != State::Disconnected);

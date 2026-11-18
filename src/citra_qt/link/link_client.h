@@ -68,6 +68,16 @@ public:
         mii_sync_wanted = true;
     }
 
+    /// The clock of the 3DS (as its games see it) minus the PC's UTC time, in seconds;
+    /// true once after every connect.
+    bool TakeConsoleClock(int64_t& delta_seconds) {
+        if (!clock_new.exchange(false)) {
+            return false;
+        }
+        delta_seconds = clock_delta.load();
+        return true;
+    }
+
     /// The user turned the picture on the 3DS off (setting in the 3DS app).
     bool VideoWanted() const {
         return video_wanted.load();
@@ -111,6 +121,10 @@ private:
     std::string game_name;
     std::atomic<bool> session_dirty{false}; // the 3DS does not know the game yet
     void SendSession();
+
+    std::atomic<bool> clock_new{false};
+    std::atomic<int64_t> clock_delta{0};
+    void ReadConsoleClock();
 
     std::atomic<bool> mii_sync_wanted{false};
     void SyncMiis(bool report_unchanged);

@@ -181,6 +181,12 @@ std::string Text(const char* key) {
         {"battery", {"battery %1%", "Akku %1 %"}},
         {"charging", {"charging", "lädt"}},
         {"status_3ds", {"Azahar: connected", "Azahar: verbunden"}},
+        {"clock_set", {"Azahar now uses the clock of the 3DS (%1)",
+                       "Azahar nutzt jetzt die Uhrzeit des 3DS (%1)"}},
+        {"clock_restart", {"Azahar now uses the clock of the 3DS (%1) - restart the game for it",
+                           "Azahar nutzt jetzt die Uhrzeit des 3DS (%1) - dafür das Spiel neu starten"}},
+        {"clock_old_app", {"For the clock, please update the 3DS Link app on the 3DS",
+                           "Für die Uhrzeit bitte die 3DS-Link-App auf dem 3DS aktualisieren"}},
         {"miisync", {"Take the Miis from the 3DS", "Miis vom 3DS übernehmen"}},
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
         {"mii_same", {"The Miis are already the same as on the 3DS",
@@ -383,6 +389,32 @@ int Client::PollEvents() {
     return 1;
 }
 
+// The clock of the 3DS: Azahar runs on the same time, so games that remember when they
+// were played (and punish a clock that went back) see no jump.
+void Client::ReadConsoleClock() {
+    uint16_t status = 0;
+    std::vector<uint8_t> out;
+    if (!Request(LINK_CMD_GETTIME, nullptr, 0, status, &out)) {
+        return;
+    }
+    if (status == LINK_ERR_BADCMD) {
+        PushMessage(Text("clock_old_app"));
+        return;
+    }
+    if (status != LINK_OK || out.size() < 8) {
+        return;
+    }
+    uint64_t ms_since_1900 = 0;
+    std::memcpy(&ms_since_1900, out.data(), 8);
+    constexpr int64_t kSeconds1900To1970 = 2208988800LL;
+    const int64_t console = static_cast<int64_t>(ms_since_1900 / 1000) - kSeconds1900To1970;
+    const int64_t pc = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+    clock_delta = console - pc;
+    clock_new = true;
+}
+
 // The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place
 // where Azahar's Mii selector reads it. Games like Pokemon Rumble World need a Mii.
 void Client::SyncMiis(bool report_unchanged) {
@@ -552,6 +584,7 @@ void Client::Worker(std::string host) {
 
         session_dirty = true;
         mii_sync_wanted = false;
+        ReadConsoleClock();
         SyncMiis(false);
         int64_t last_hello = 0;
         int64_t last_ping = NowMs();
