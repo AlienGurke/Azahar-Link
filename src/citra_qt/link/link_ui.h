@@ -16,6 +16,7 @@ class QLabel;
 class QMainWindow;
 class QSettings;
 class QTimer;
+class QWidget;
 
 namespace Link {
 
@@ -25,6 +26,10 @@ class LinkUi : public QObject {
 public:
     explicit LinkUi(QMainWindow* window);
     ~LinkUi() override;
+
+    /// Called before a game boots. If the 3DS is connected, offers to load the game's
+    /// save from it (read only). Returns false if the user cancelled the start.
+    static bool BeforeBoot(QWidget* parent, const QString& filename);
 
 private:
     void OnConnect();

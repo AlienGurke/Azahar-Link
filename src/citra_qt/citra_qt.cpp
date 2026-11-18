@@ -1621,6 +1621,11 @@ void GMainWindow::BootGame(const QString& filename) {
         return;
     }
 
+    // 3DS Link: offer the game's save from the connected 3DS (read only)
+    if (!is_artic && !Link::LinkUi::BeforeBoot(this, filename)) {
+        return;
+    }
+
     show_artic_label = is_artic;
 
     LOG_INFO(Frontend, "Azahar starting...");

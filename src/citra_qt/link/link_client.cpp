@@ -139,7 +139,9 @@ bool RecvAll(sock_t s, void* buf, size_t len, int timeout_ms = 10000) {
     return true;
 }
 
-std::string Format(std::string text, const std::string& a, const std::string& b = {}) {
+} // namespace
+
+std::string Format(std::string text, const std::string& a, const std::string& b) {
     auto put = [&](const char* mark, const std::string& value) {
         const size_t pos = text.find(mark);
         if (pos != std::string::npos) {
@@ -150,8 +152,6 @@ std::string Format(std::string text, const std::string& a, const std::string& b 
     put("%2", b);
     return text;
 }
-
-} // namespace
 
 std::string Text(const char* key) {
     struct Entry {
@@ -187,6 +187,37 @@ std::string Text(const char* key) {
                            "Azahar nutzt jetzt die Uhrzeit des 3DS (%1) - dafür das Spiel neu starten"}},
         {"clock_old_app", {"For the clock, please update the 3DS Link app on the 3DS",
                            "Für die Uhrzeit bitte die 3DS-Link-App auf dem 3DS aktualisieren"}},
+        {"save_ask_title", {"Save from the 3DS?", "Spielstand vom 3DS?"}},
+        {"save_ask", {"The 3DS is connected. Load the save of this game from the 3DS?\n\n"
+                      "Azahar's save is kept as a backup first. Nothing is written to the 3DS.",
+                      "Der 3DS ist verbunden. Den Spielstand dieses Spiels vom 3DS laden?\n\n"
+                      "Azahars Spielstand wird vorher gesichert. Auf den 3DS wird nichts "
+                      "geschrieben."}},
+        {"save_ask_load", {"Load from the 3DS", "Vom 3DS laden"}},
+        {"save_ask_pc", {"Use the PC save", "PC-Spielstand nutzen"}},
+        {"save_progress_title", {"3DS Link", "3DS Link"}},
+        {"save_reading", {"Reading the save", "Lese Spielstand"}},
+        {"save_reading_ext", {"Reading extra data", "Lese Extradaten"}},
+        {"save_backup", {"Making the backup...", "Lege die Sicherung an..."}},
+        {"save_writing", {"Putting the save into Azahar...", "Übernehme den Spielstand in Azahar..."}},
+        {"save_done", {"Save loaded from the 3DS (%1 KB)", "Spielstand vom 3DS geladen (%1 KB)"}},
+        {"save_done_ext", {"Save and extra data loaded from the 3DS (%1 KB)",
+                           "Spielstand und Extradaten vom 3DS geladen (%1 KB)"}},
+        {"save_none", {"The 3DS has no save for this game (title ID %1). Starting with the PC "
+                       "save.",
+                       "Auf dem 3DS gibt es keinen Spielstand für dieses Spiel (Title-ID %1). Es "
+                       "startet mit dem Spielstand vom PC."}},
+        {"save_failed_title", {"Save from the 3DS", "Spielstand vom 3DS"}},
+        {"save_failed", {"The save could not be loaded from the 3DS:\n%1\n\nAzahar's save is "
+                         "unchanged. Start with it?",
+                         "Der Spielstand konnte nicht vom 3DS geladen werden:\n%1\n\nAzahars "
+                         "Spielstand ist unverändert. Damit starten?"}},
+        {"save_conn_lost", {"the connection to the 3DS was lost", "die Verbindung zum 3DS ist abgebrochen"}},
+        {"save_old_app", {"the 3DS Link app on the 3DS is too old", "die 3DS-Link-App auf dem 3DS ist zu alt"}},
+        {"save_read_failed", {"reading failed", "Lesen fehlgeschlagen"}},
+        {"save_bad_name", {"unusual file name", "ungewöhnlicher Dateiname"}},
+        {"save_write_failed", {"could not write %1", "konnte %1 nicht schreiben"}},
+        {"backups_open", {"Open the save backups folder", "Ordner mit den Spielstand-Sicherungen öffnen"}},
         {"miisync", {"Take the Miis from the 3DS", "Miis vom 3DS übernehmen"}},
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
         {"mii_same", {"The Miis are already the same as on the 3DS",
@@ -417,42 +448,108 @@ void Client::ReadConsoleClock() {
 
 // The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place
 // where Azahar's Mii selector reads it. Games like Pokemon Rumble World need a Mii.
-void Client::SyncMiis(bool report_unchanged) {
-    const std::string file = "/CFL_DB.dat";
-    std::vector<uint8_t> data;
+bool Client::ArcList(const LinkArchiveReq& archive, const std::string& dir,
+                     std::vector<DirEntry>& entries, uint16_t& status) {
+    std::vector<uint8_t> req(sizeof(archive));
+    std::memcpy(req.data(), &archive, sizeof(archive));
+    req.insert(req.end(), dir.begin(), dir.end());
+    std::vector<uint8_t> out;
+    if (!Request(LINK_CMD_ARCLIST, req.data(), static_cast<uint32_t>(req.size()), status, &out)) {
+        return false;
+    }
+    entries.clear();
+    size_t pos = 0;
+    while (status == LINK_OK && pos + sizeof(LinkDirEntry) <= out.size()) {
+        LinkDirEntry de;
+        std::memcpy(&de, out.data() + pos, sizeof(de));
+        pos += sizeof(de);
+        if (pos + de.nameLen > out.size()) {
+            break;
+        }
+        DirEntry e;
+        e.name.assign(reinterpret_cast<const char*>(out.data() + pos), de.nameLen);
+        e.is_dir = de.isDir != 0;
+        e.size = de.size;
+        pos += de.nameLen;
+        entries.push_back(std::move(e));
+    }
+    return true;
+}
+
+bool Client::ArcRead(const LinkArchiveReq& archive, const std::string& path,
+                     std::vector<uint8_t>& data, uint16_t& status) {
+    data.clear();
     uint32_t total = 0;
-    // in pieces: the database is about 300 KB, more than one answer can hold
+    // in pieces: one answer holds at most LINK_MAX_PAYLOAD
     do {
-        LinkArchiveReq ar = {LINK_ARCHIVE_SHARED_EXTDATA, LINK_MEDIA_NAND, LINK_MII_EXTDATA_LOW,
-                             LINK_MII_EXTDATA_HIGH, static_cast<uint32_t>(data.size()),
-                             128 * 1024};
+        LinkArchiveReq ar = archive;
+        ar.offset = static_cast<uint32_t>(data.size());
+        ar.length = 128 * 1024;
         std::vector<uint8_t> req(sizeof(ar));
         std::memcpy(req.data(), &ar, sizeof(ar));
-        req.insert(req.end(), file.begin(), file.end());
-
-        uint16_t status = 0;
+        req.insert(req.end(), path.begin(), path.end());
         std::vector<uint8_t> part;
         if (!Request(LINK_CMD_ARCREAD, req.data(), static_cast<uint32_t>(req.size()), status,
                      &part)) {
-            return; // connection gone; the next connect tries again
+            return false;
         }
-        if (status == LINK_ERR_BADCMD) {
-            PushMessage(Text("mii_old_app"));
-            return;
+        if (status != LINK_OK) {
+            return true;
         }
-        if (status != LINK_OK || part.size() < 4) {
-            PushMessage(Format(Text("mii_failed"), std::to_string(status)));
-            return;
+        if (part.size() < 4) {
+            status = LINK_ERR_IO;
+            return true;
         }
         std::memcpy(&total, part.data(), 4);
-        if (part.size() == 4 || total > 4 * 1024 * 1024) {
+        if (total > 64 * 1024 * 1024) {
+            status = LINK_ERR_IO;
+            return true;
+        }
+        if (part.size() == 4) {
             break;
         }
         data.insert(data.end(), part.begin() + 4, part.end());
     } while (data.size() < total);
+    if (data.size() != total) {
+        status = LINK_ERR_IO;
+    }
+    return true;
+}
+
+bool Client::ArcInfo(const LinkArchiveReq& archive, LinkFormatInfo& info, uint16_t& status) {
+    std::vector<uint8_t> out;
+    if (!Request(LINK_CMD_ARCINFO, &archive, sizeof(archive), status, &out)) {
+        return false;
+    }
+    if (status == LINK_OK) {
+        if (out.size() < sizeof(info)) {
+            status = LINK_ERR_IO;
+        } else {
+            std::memcpy(&info, out.data(), sizeof(info));
+        }
+    }
+    return true;
+}
+
+void Client::SyncMiis(bool report_unchanged) {
+    const LinkArchiveReq ar = {LINK_ARCHIVE_SHARED_EXTDATA, LINK_MEDIA_NAND, LINK_MII_EXTDATA_LOW,
+                               LINK_MII_EXTDATA_HIGH, 0, 0};
+    uint16_t status = 0;
+    std::vector<uint8_t> data;
+    if (!ArcRead(ar, "/CFL_DB.dat", data, status)) {
+        return; // connection gone; the next connect tries again
+    }
+    if (status == LINK_ERR_BADCMD) {
+        PushMessage(Text("mii_old_app"));
+        return;
+    }
+    if (status != LINK_OK) {
+        PushMessage(Format(Text("mii_failed"), std::to_string(status)));
+        return;
+    }
 
     // the database starts with "CFOG"
-    if (data.size() != total || data.size() < 8 || std::memcmp(data.data(), "CFOG", 4) != 0) {
+    if (data.size() < 8 || std::memcmp(data.data(), "CFOG", 4) != 0) {
         PushMessage(Format(Text("mii_failed"), "format"));
         return;
     }

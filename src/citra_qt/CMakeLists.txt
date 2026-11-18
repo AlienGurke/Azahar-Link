@@ -32,6 +32,8 @@ add_library(citra_qt STATIC EXCLUDE_FROM_ALL
     link/LinkProto.h
     link/link_client.cpp
     link/link_client.h
+    link/link_save.cpp
+    link/link_save.h
     link/link_ui.cpp
     link/link_ui.h
     configuration/config.cpp

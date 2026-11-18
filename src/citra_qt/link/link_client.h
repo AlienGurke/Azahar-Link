@@ -78,6 +78,20 @@ public:
         return true;
     }
 
+    // --- 3DS file system archives (saves, extdata, system data) ---
+    // Blocking: call them from a worker thread, never from the UI. They return false if the
+    // connection failed; `status` then holds nothing useful, otherwise a LinkStatus.
+    struct DirEntry {
+        std::string name;
+        bool is_dir = false;
+        uint64_t size = 0;
+    };
+    bool ArcList(const LinkArchiveReq& archive, const std::string& dir,
+                 std::vector<DirEntry>& entries, uint16_t& status);
+    bool ArcRead(const LinkArchiveReq& archive, const std::string& path,
+                 std::vector<uint8_t>& data, uint16_t& status);
+    bool ArcInfo(const LinkArchiveReq& archive, LinkFormatInfo& info, uint16_t& status);
+
     /// The user turned the picture on the 3DS off (setting in the 3DS app).
     bool VideoWanted() const {
         return video_wanted.load();
@@ -168,5 +182,8 @@ Client& Get();
 
 /// A text in the language of Azahar's interface (German or English).
 std::string Text(const char* key);
+
+/// Puts a and b in the places of %1 and %2.
+std::string Format(std::string text, const std::string& a, const std::string& b = {});
 
 } // namespace Link

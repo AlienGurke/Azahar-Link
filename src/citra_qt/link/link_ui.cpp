@@ -2,7 +2,16 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <thread>
 #include <QAction>
+#include <QDesktopServices>
+#include <QDir>
+#include <QEventLoop>
+#include <QMessageBox>
+#include <QProgressDialog>
+#include <QPushButton>
+#include <QCoreApplication>
+#include <QUrl>
 #include <QInputDialog>
 #include <QLabel>
 #include <QMainWindow>
@@ -13,6 +22,7 @@
 #include <QTimer>
 
 #include "citra_qt/link/link_client.h"
+#include "citra_qt/link/link_save.h"
 #include "citra_qt/link/link_ui.h"
 #include <ctime>
 #include <QDateTime>
@@ -46,6 +56,12 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     disconnect_action = menu->addAction(Q("disconnect"));
     QAction* mii_action = menu->addAction(Q("miisync"));
     connect(mii_action, &QAction::triggered, this, [] { Get().RequestMiiSync(); });
+    QAction* backups_action = menu->addAction(Q("backups_open"));
+    connect(backups_action, &QAction::triggered, this, [] {
+        const QString dir = QString::fromStdString(BackupRoot());
+        QDir().mkpath(dir);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    });
     menu->addSeparator();
     auto_action = menu->addAction(Q("autoconnect"));
     auto_action->setCheckable(true);
@@ -74,6 +90,75 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
 LinkUi::~LinkUi() {
     // before the renderer and the HID service go away
     Get().Disconnect();
+}
+
+bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
+    if (Get().GetState() != State::Connected) {
+        return true;
+    }
+    u64 program_id = 0;
+    const auto loader = Loader::GetLoader(filename.toStdString());
+    if (!loader || loader->ReadProgramId(program_id) != Loader::ResultStatus::Success ||
+        program_id == 0) {
+        return true;
+    }
+
+    QMessageBox ask(QMessageBox::Question, Q("save_ask_title"), Q("save_ask"),
+                    QMessageBox::NoButton, parent);
+    QPushButton* load = ask.addButton(Q("save_ask_load"), QMessageBox::AcceptRole);
+    QPushButton* pc = ask.addButton(Q("save_ask_pc"), QMessageBox::RejectRole);
+    ask.addButton(QMessageBox::Cancel);
+    ask.setDefaultButton(load);
+    ask.exec();
+    if (ask.clickedButton() == pc) {
+        return true;
+    }
+    if (ask.clickedButton() != load) {
+        return false; // cancelled: no start
+    }
+
+    QProgressDialog progress(Q("save_reading"), QString(), 0, 0, parent);
+    progress.setWindowTitle(Q("save_progress_title"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setCancelButton(nullptr);
+    progress.setMinimumWidth(420);
+    progress.show();
+
+    SaveImportResult result;
+    QEventLoop loop;
+    std::thread worker([&] {
+        result = ImportSaveFrom3DS(program_id, [&progress](const std::string& text) {
+            QMetaObject::invokeMethod(
+                &progress,
+                [&progress, label = QString::fromStdString(text)] {
+                    progress.setLabelText(label);
+                },
+                Qt::QueuedConnection);
+        });
+        QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
+    });
+    loop.exec();
+    worker.join();
+    QCoreApplication::processEvents(); // drop the last label updates before closing
+    progress.close();
+
+    const QString message = QString::fromStdString(result.message);
+    switch (result.outcome) {
+    case SaveImportResult::Outcome::Imported:
+        if (auto* main = qobject_cast<QMainWindow*>(parent)) {
+            main->statusBar()->showMessage(message, 10000);
+        }
+        return true;
+    case SaveImportResult::Outcome::NoSave:
+        QMessageBox::information(parent, Q("save_failed_title"), message);
+        return true;
+    case SaveImportResult::Outcome::Failed:
+    default:
+        return QMessageBox::question(parent, Q("save_failed_title"),
+                                     Q("save_failed").replace(QStringLiteral("%1"), message)) ==
+               QMessageBox::Yes;
+    }
 }
 
 void LinkUi::OnConnect() {
