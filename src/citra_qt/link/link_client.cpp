@@ -207,6 +207,10 @@ std::string Text(const char* key) {
                        "save.",
                        "Auf dem 3DS gibt es keinen Spielstand für dieses Spiel (Title-ID %1). Es "
                        "startet mit dem Spielstand vom PC."}},
+        {"save_diag", {"Installed on the 3DS: %1. Codes of the 3DS: %2", "Auf dem 3DS installiert: %1. Codes des 3DS: %2"}},
+        {"yes_sd", {"yes (SD card)", "ja (SD-Karte)"}},
+        {"yes_card", {"yes (game card)", "ja (Modul)"}},
+        {"no", {"no", "nein"}},
         {"save_failed_title", {"Save from the 3DS", "Spielstand vom 3DS"}},
         {"save_failed", {"The save could not be loaded from the 3DS:\n%1\n\nAzahar's save is "
                          "unchanged. Start with it?",
@@ -448,6 +452,38 @@ void Client::ReadConsoleClock() {
 
 // The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place
 // where Azahar's Mii selector reads it. Games like Pokemon Rumble World need a Mii.
+void Client::NoteArcResult(uint16_t status, const std::vector<uint8_t>& out) {
+    uint32_t code = 0;
+    if (status != LINK_OK && out.size() >= 4) {
+        std::memcpy(&code, out.data(), 4);
+    }
+    last_arc_result = code;
+}
+
+bool Client::Titles(std::vector<uint64_t>& sd, std::vector<uint64_t>& card, uint16_t& status) {
+    std::vector<uint8_t> out;
+    if (!Request(LINK_CMD_TITLES, nullptr, 0, status, &out)) {
+        return false;
+    }
+    sd.clear();
+    card.clear();
+    size_t pos = 0;
+    for (auto* list : {&sd, &card}) {
+        if (status != LINK_OK || pos + 4 > out.size()) {
+            break;
+        }
+        uint32_t n = 0;
+        std::memcpy(&n, out.data() + pos, 4);
+        pos += 4;
+        for (uint32_t i = 0; i < n && pos + 8 <= out.size(); i++, pos += 8) {
+            uint64_t id = 0;
+            std::memcpy(&id, out.data() + pos, 8);
+            list->push_back(id);
+        }
+    }
+    return true;
+}
+
 bool Client::ArcList(const LinkArchiveReq& archive, const std::string& dir,
                      std::vector<DirEntry>& entries, uint16_t& status) {
     std::vector<uint8_t> req(sizeof(archive));
@@ -457,6 +493,7 @@ bool Client::ArcList(const LinkArchiveReq& archive, const std::string& dir,
     if (!Request(LINK_CMD_ARCLIST, req.data(), static_cast<uint32_t>(req.size()), status, &out)) {
         return false;
     }
+    NoteArcResult(status, out);
     entries.clear();
     size_t pos = 0;
     while (status == LINK_OK && pos + sizeof(LinkDirEntry) <= out.size()) {
@@ -494,6 +531,7 @@ bool Client::ArcRead(const LinkArchiveReq& archive, const std::string& path,
             return false;
         }
         if (status != LINK_OK) {
+            NoteArcResult(status, part);
             return true;
         }
         if (part.size() < 4) {

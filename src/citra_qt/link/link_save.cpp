@@ -229,6 +229,7 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id,
     Tree save;
     std::string error;
     int found = 0;
+    std::string codes;
     for (const u32 media : {LINK_MEDIA_SD, LINK_MEDIA_GAMECARD}) {
         const LinkArchiveReq ar = {LINK_ARCHIVE_USER_SAVEDATA, media, low, high, 0, 0};
         save = Tree{};
@@ -236,14 +237,36 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id,
         if (found != 0) {
             break;
         }
+        codes += fmt::format("{}{} 0x{:08X}", codes.empty() ? "" : ", ",
+                             media == LINK_MEDIA_SD ? "SD" : "Card", client.LastArcResult());
     }
     if (found < 0) {
         result.message = error;
         return result;
     }
     if (found == 0) {
+        // why: is the game installed at all (else another version / region is)?
+        std::vector<uint64_t> sd, card;
+        uint16_t st = 0;
+        std::string installed = "?";
+        if (client.Titles(sd, card, st) && st == LINK_OK) {
+            const bool on_sd = std::find(sd.begin(), sd.end(), program_id) != sd.end();
+            const bool on_card = std::find(card.begin(), card.end(), program_id) != card.end();
+            installed = on_sd ? Text("yes_sd") : on_card ? Text("yes_card") : Text("no");
+            // the list for checking which version is on the 3DS
+            std::error_code ec;
+            fs::create_directories(U8(BackupRoot()), ec);
+            std::ofstream list(U8(BackupRoot() + "3ds-titles.txt"));
+            for (const u64 id : sd) {
+                list << fmt::format("SD   {:016X}\n", id);
+            }
+            for (const u64 id : card) {
+                list << fmt::format("Card {:016X}\n", id);
+            }
+        }
         result.outcome = SaveImportResult::Outcome::NoSave;
-        result.message = Format(Text("save_none"), tid);
+        result.message = Format(Text("save_none"), tid) + "\n\n" +
+                         Format(Text("save_diag"), installed, codes);
         return result;
     }
 

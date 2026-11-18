@@ -91,6 +91,12 @@ public:
     bool ArcRead(const LinkArchiveReq& archive, const std::string& path,
                  std::vector<uint8_t>& data, uint16_t& status);
     bool ArcInfo(const LinkArchiveReq& archive, LinkFormatInfo& info, uint16_t& status);
+    /// The 3DS result code of the last archive call that failed (0 = none sent).
+    uint32_t LastArcResult() const {
+        return last_arc_result.load();
+    }
+    /// Title ids installed on the SD card and on the game card.
+    bool Titles(std::vector<uint64_t>& sd, std::vector<uint64_t>& card, uint16_t& status);
 
     /// The user turned the picture on the 3DS off (setting in the 3DS app).
     bool VideoWanted() const {
@@ -139,6 +145,9 @@ private:
     std::atomic<bool> clock_new{false};
     std::atomic<int64_t> clock_delta{0};
     void ReadConsoleClock();
+
+    std::atomic<uint32_t> last_arc_result{0};
+    void NoteArcResult(uint16_t status, const std::vector<uint8_t>& out);
 
     std::atomic<bool> mii_sync_wanted{false};
     void SyncMiis(bool report_unchanged);
