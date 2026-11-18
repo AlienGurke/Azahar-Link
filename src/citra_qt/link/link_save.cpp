@@ -217,7 +217,7 @@ std::string BackupRoot() {
     return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/backups/";
 }
 
-SaveImportResult ImportSaveFrom3DS(u64 program_id,
+SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
                                    const std::function<void(const std::string&)>& progress) {
     SaveImportResult result;
     Client& client = Get();
@@ -270,8 +270,9 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id,
         return result;
     }
 
-    // extdata: its id is the middle of the title id (as save managers like Checkpoint do)
-    const u32 ext_id = low >> 8;
+    // extdata: the id in the game's header; without it, the middle of the title id (as
+    // save managers guess it - wrong for some games, e.g. Pokemon Rumble World uses 0x1646)
+    const u32 ext_id = extdata_id != 0 ? static_cast<u32>(extdata_id) : low >> 8;
     Tree ext;
     const LinkArchiveReq ext_ar = {LINK_ARCHIVE_EXTDATA, LINK_MEDIA_SD, ext_id, 0, 0, 0};
     const int ext_found = ReadTree(client, ext_ar, ext, error, progress, Text("save_reading_ext"));

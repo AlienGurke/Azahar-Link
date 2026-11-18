@@ -97,10 +97,14 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
         return true;
     }
     u64 program_id = 0;
+    u64 extdata_id = 0;
     const auto loader = Loader::GetLoader(filename.toStdString());
     if (!loader || loader->ReadProgramId(program_id) != Loader::ResultStatus::Success ||
         program_id == 0) {
         return true;
+    }
+    if (loader->ReadExtdataId(extdata_id) != Loader::ResultStatus::Success) {
+        extdata_id = 0;
     }
 
     QMessageBox ask(QMessageBox::Question, Q("save_ask_title"), Q("save_ask"),
@@ -128,7 +132,7 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
     SaveImportResult result;
     QEventLoop loop;
     std::thread worker([&] {
-        result = ImportSaveFrom3DS(program_id, [&progress](const std::string& text) {
+        result = ImportSaveFrom3DS(program_id, extdata_id, [&progress](const std::string& text) {
             QMetaObject::invokeMethod(
                 &progress,
                 [&progress, label = QString::fromStdString(text)] {

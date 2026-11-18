@@ -30,7 +30,8 @@ struct SaveImportResult {
 };
 
 /// Blocking: call it from a worker thread. `progress` gets short texts for the user.
-SaveImportResult ImportSaveFrom3DS(u64 program_id,
+/// `extdata_id`: from the game's header (0 = unknown: guessed from the title id).
+SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
                                    const std::function<void(const std::string&)>& progress);
 
 /// Folder with the backups of all games.
