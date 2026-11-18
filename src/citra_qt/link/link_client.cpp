@@ -185,7 +185,8 @@ std::string Text(const char* key) {
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
         {"mii_same", {"The Miis are already the same as on the 3DS",
                       "Die Miis sind schon dieselben wie auf dem 3DS"}},
-        {"mii_failed", {"Could not read the Miis from the 3DS", "Konnte die Miis nicht vom 3DS lesen"}},
+        {"mii_failed", {"Could not read the Miis from the 3DS (%1)",
+                        "Konnte die Miis nicht vom 3DS lesen (%1)"}},
         {"mii_old_app", {"For the Miis, please update the 3DS Link app on the 3DS",
                          "Für die Miis bitte die 3DS-Link-App auf dem 3DS aktualisieren"}},
     };
@@ -385,24 +386,42 @@ int Client::PollEvents() {
 // The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place
 // where Azahar's Mii selector reads it. Games like Pokemon Rumble World need a Mii.
 void Client::SyncMiis(bool report_unchanged) {
-    std::vector<uint8_t> req(sizeof(LinkArchiveReq));
-    const LinkArchiveReq ar = {LINK_ARCHIVE_SHARED_EXTDATA, LINK_MEDIA_NAND, LINK_MII_EXTDATA_LOW,
-                               LINK_MII_EXTDATA_HIGH};
-    std::memcpy(req.data(), &ar, sizeof(ar));
     const std::string file = "/CFL_DB.dat";
-    req.insert(req.end(), file.begin(), file.end());
-
-    uint16_t status = 0;
     std::vector<uint8_t> data;
-    if (!Request(LINK_CMD_ARCREAD, req.data(), static_cast<uint32_t>(req.size()), status, &data)) {
-        return; // connection gone; the next connect tries again
-    }
-    if (status == LINK_ERR_BADCMD) {
-        PushMessage(Text("mii_old_app"));
-        return;
-    }
-    if (status != LINK_OK || data.size() < 8) {
-        PushMessage(Text("mii_failed"));
+    uint32_t total = 0;
+    // in pieces: the database is about 300 KB, more than one answer can hold
+    do {
+        LinkArchiveReq ar = {LINK_ARCHIVE_SHARED_EXTDATA, LINK_MEDIA_NAND, LINK_MII_EXTDATA_LOW,
+                             LINK_MII_EXTDATA_HIGH, static_cast<uint32_t>(data.size()),
+                             128 * 1024};
+        std::vector<uint8_t> req(sizeof(ar));
+        std::memcpy(req.data(), &ar, sizeof(ar));
+        req.insert(req.end(), file.begin(), file.end());
+
+        uint16_t status = 0;
+        std::vector<uint8_t> part;
+        if (!Request(LINK_CMD_ARCREAD, req.data(), static_cast<uint32_t>(req.size()), status,
+                     &part)) {
+            return; // connection gone; the next connect tries again
+        }
+        if (status == LINK_ERR_BADCMD) {
+            PushMessage(Text("mii_old_app"));
+            return;
+        }
+        if (status != LINK_OK || part.size() < 4) {
+            PushMessage(Format(Text("mii_failed"), std::to_string(status)));
+            return;
+        }
+        std::memcpy(&total, part.data(), 4);
+        if (part.size() == 4 || total > 4 * 1024 * 1024) {
+            break;
+        }
+        data.insert(data.end(), part.begin() + 4, part.end());
+    } while (data.size() < total);
+
+    // the database starts with "CFOG"
+    if (data.size() != total || data.size() < 8 || std::memcmp(data.data(), "CFOG", 4) != 0) {
+        PushMessage(Format(Text("mii_failed"), "format"));
         return;
     }
 
@@ -426,7 +445,7 @@ void Client::SyncMiis(bool report_unchanged) {
     }
     const std::string_view bytes(reinterpret_cast<const char*>(data.data()), data.size());
     if (FileUtil::WriteStringToFile(false, path, bytes) != data.size()) {
-        PushMessage(Text("mii_failed"));
+        PushMessage(Format(Text("mii_failed"), "PC"));
         return;
     }
     PushMessage(Text("mii_done"));

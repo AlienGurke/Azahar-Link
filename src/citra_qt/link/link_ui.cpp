@@ -111,7 +111,7 @@ void LinkUi::Poll() {
 
     std::string msg;
     while (client.PopMessage(msg)) {
-        window->statusBar()->showMessage(QString::fromStdString(msg), 5000);
+        window->statusBar()->showMessage(QString::fromStdString(msg), 10000);
     }
 
     const State state = client.GetState();
