@@ -34,6 +34,12 @@ struct SaveImportResult {
 SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
                                    const std::function<void(const std::string&)>& progress);
 
+/// The system data archives (Mii graphics CFL_Res, shared fonts, region and country data,
+/// ...) that Azahar lacks are copied from the 3DS's CTR-NAND, as they are stored there.
+/// Blocking. Returns the number of titles copied; `message` is set when something was
+/// copied or went wrong.
+int CopySystemDataFrom3DS(std::string& message);
+
 /// Folder with the backups of all games.
 std::string BackupRoot();
 

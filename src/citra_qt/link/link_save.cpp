@@ -17,6 +17,7 @@
 #include "citra_qt/link/link_client.h"
 #include "citra_qt/link/link_save.h"
 #include "common/file_util.h"
+#include "core/system_titles.h"
 
 namespace fs = std::filesystem;
 
@@ -212,6 +213,98 @@ std::string NowName() {
 }
 
 } // namespace
+
+int CopySystemDataFrom3DS(std::string& message) {
+    Client& client = Get();
+    // the data archives Azahar knows (core/system_titles.cpp), of every region
+    std::vector<u64> ids;
+    for (u32 region = 0; region < Core::NUM_SYSTEM_TITLE_REGIONS; region++) {
+        for (const auto set : {Core::SystemTitleSet::Minimal, Core::SystemTitleSet::Old3ds,
+                               Core::SystemTitleSet::New3ds}) {
+            for (const u64 id : Core::GetSystemTitleIds(set, region)) {
+                const u32 high = static_cast<u32>(id >> 32);
+                if ((high == 0x0004009B || high == 0x000400DB) &&
+                    std::find(ids.begin(), ids.end(), id) == ids.end()) {
+                    ids.push_back(id);
+                }
+            }
+        }
+    }
+
+    const std::string nand = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir);
+    const LinkArchiveReq ctrnand = {LINK_ARCHIVE_NAND_CTR_FS, LINK_MEDIA_NOPATH, 0, 0, 0, 0};
+    int copied = 0;
+    for (const u64 id : ids) {
+        const u32 high = static_cast<u32>(id >> 32);
+        const u32 low = static_cast<u32>(id & 0xFFFFFFFF);
+        const fs::path content =
+            U8(fmt::format("{}{}/title/{:08x}/{:08x}/content", nand, kId, high, low));
+        // already there (a .tmd is what Azahar looks for)?
+        std::error_code ec;
+        bool present = false;
+        for (const auto& e : fs::directory_iterator(content, ec)) {
+            if (e.path().extension() == ".tmd") {
+                present = true;
+                break;
+            }
+        }
+        if (present) {
+            continue;
+        }
+
+        const std::string dir = fmt::format("/title/{:08x}/{:08x}/content", high, low);
+        std::vector<Client::DirEntry> entries;
+        uint16_t status = 0;
+        if (!client.ArcList(ctrnand, dir, entries, status)) {
+            return copied; // connection gone
+        }
+        if (status == LINK_ERR_BADCMD) {
+            message = Text("sys_old_app");
+            return copied;
+        }
+        if (status == LINK_ERR_DENIED) {
+            message = fmt::format("{} (0x{:08X})", Text("sys_denied"), client.LastArcResult());
+            return copied;
+        }
+        if (status != LINK_OK) {
+            continue; // not on this 3DS (another region)
+        }
+
+        // the title's .tmd and contents, written next to the folder and then moved in
+        Tree tree;
+        for (const auto& e : entries) {
+            if (e.is_dir) {
+                continue;
+            }
+            std::vector<uint8_t> data;
+            if (!client.ArcRead(ctrnand, dir + "/" + e.name, data, status)) {
+                return copied;
+            }
+            if (status != LINK_OK || data.size() != e.size) {
+                message = fmt::format("{} ({}/{}: {})", Text("save_read_failed"), dir, e.name,
+                                      status);
+                return copied;
+            }
+            tree.files["/" + e.name] = std::move(data);
+        }
+        if (tree.files.empty()) {
+            continue;
+        }
+        fs::path fresh = content;
+        fresh += U8(".3dslink-new");
+        fs::remove_all(fresh, ec);
+        if (!WriteTree(tree, fresh) || !SwapIn(fresh, content)) {
+            fs::remove_all(fresh, ec);
+            message = Format(Text("save_write_failed"), FromPath(content));
+            return copied;
+        }
+        copied++;
+    }
+    if (copied > 0 && message.empty()) {
+        message = Format(Text("sys_done"), std::to_string(copied));
+    }
+    return copied;
+}
 
 std::string BackupRoot() {
     return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/backups/";

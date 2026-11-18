@@ -36,6 +36,7 @@ typedef int sock_t;
 #include <QLocale>
 
 #include "citra_qt/link/link_client.h"
+#include "citra_qt/link/link_save.h"
 #include "citra_qt/uisettings.h"
 #include "common/file_util.h"
 #include "core/hle/service/hid/hid.h"
@@ -221,6 +222,14 @@ std::string Text(const char* key) {
         {"save_read_failed", {"reading failed", "Lesen fehlgeschlagen"}},
         {"save_bad_name", {"unusual file name", "ungewöhnlicher Dateiname"}},
         {"save_write_failed", {"could not write %1", "konnte %1 nicht schreiben"}},
+        {"sys_done", {"System data taken from the 3DS (%1 parts: Mii graphics, fonts, ...) - "
+                      "restart the game for it",
+                      "Systemdaten vom 3DS übernommen (%1 Teile: Mii-Grafik, Schrift, ...) - "
+                      "dafür das Spiel neu starten"}},
+        {"sys_denied", {"The 3DS Link app may not read the system data",
+                        "Die 3DS-Link-App darf die Systemdaten nicht lesen"}},
+        {"sys_old_app", {"For the system data, please update the 3DS Link app on the 3DS",
+                         "Für die Systemdaten bitte die 3DS-Link-App auf dem 3DS aktualisieren"}},
         {"backups_open", {"Open the save backups folder", "Ordner mit den Spielstand-Sicherungen öffnen"}},
         {"miisync", {"Take the Miis from the 3DS", "Miis vom 3DS übernehmen"}},
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
@@ -721,6 +730,14 @@ void Client::Worker(std::string host) {
         mii_sync_wanted = false;
         ReadConsoleClock();
         SyncMiis(false);
+        {
+            // system data Azahar lacks (Mii graphics, fonts...): once, quietly if all is there
+            std::string sys_message;
+            CopySystemDataFrom3DS(sys_message);
+            if (!sys_message.empty()) {
+                PushMessage(sys_message);
+            }
+        }
         int64_t last_hello = 0;
         int64_t last_ping = NowMs();
         bool lost_by_lid = false;
