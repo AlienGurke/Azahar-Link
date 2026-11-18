@@ -62,6 +62,12 @@ public:
     /// Name of the running game (empty = none), shown in the 3DS app.
     void SetGameName(const std::string& name);
 
+    /// Copies the Mii database (Mii Maker) of the 3DS into Azahar now. It also happens
+    /// on every connect; Azahar's own database is kept once as CFL_DB.dat.before-3ds-link.
+    void RequestMiiSync() {
+        mii_sync_wanted = true;
+    }
+
     /// The user turned the picture on the 3DS off (setting in the 3DS app).
     bool VideoWanted() const {
         return video_wanted.load();
@@ -105,6 +111,9 @@ private:
     std::string game_name;
     std::atomic<bool> session_dirty{false}; // the 3DS does not know the game yet
     void SendSession();
+
+    std::atomic<bool> mii_sync_wanted{false};
+    void SyncMiis(bool report_unchanged);
 
     std::atomic<bool> video_wanted{true}; // bottom screen picture on (3DS setting)
     std::atomic<bool> lid_closed{false};  // closed: nobody sees the picture

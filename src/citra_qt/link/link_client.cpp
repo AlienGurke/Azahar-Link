@@ -37,6 +37,7 @@ typedef int sock_t;
 
 #include "citra_qt/link/link_client.h"
 #include "citra_qt/uisettings.h"
+#include "common/file_util.h"
 #include "core/hle/service/hid/hid.h"
 #include "video_core/renderer_base.h"
 
@@ -180,6 +181,13 @@ std::string Text(const char* key) {
         {"battery", {"battery %1%", "Akku %1 %"}},
         {"charging", {"charging", "lädt"}},
         {"status_3ds", {"Azahar: connected", "Azahar: verbunden"}},
+        {"miisync", {"Take the Miis from the 3DS", "Miis vom 3DS übernehmen"}},
+        {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
+        {"mii_same", {"The Miis are already the same as on the 3DS",
+                      "Die Miis sind schon dieselben wie auf dem 3DS"}},
+        {"mii_failed", {"Could not read the Miis from the 3DS", "Konnte die Miis nicht vom 3DS lesen"}},
+        {"mii_old_app", {"For the Miis, please update the 3DS Link app on the 3DS",
+                         "Für die Miis bitte die 3DS-Link-App auf dem 3DS aktualisieren"}},
     };
     QString lang = UISettings::values.language;
     if (lang.isEmpty()) {
@@ -374,6 +382,56 @@ int Client::PollEvents() {
     return 1;
 }
 
+// The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place
+// where Azahar's Mii selector reads it. Games like Pokemon Rumble World need a Mii.
+void Client::SyncMiis(bool report_unchanged) {
+    std::vector<uint8_t> req(sizeof(LinkArchiveReq));
+    const LinkArchiveReq ar = {LINK_ARCHIVE_SHARED_EXTDATA, LINK_MEDIA_NAND, LINK_MII_EXTDATA_LOW,
+                               LINK_MII_EXTDATA_HIGH};
+    std::memcpy(req.data(), &ar, sizeof(ar));
+    const std::string file = "/CFL_DB.dat";
+    req.insert(req.end(), file.begin(), file.end());
+
+    uint16_t status = 0;
+    std::vector<uint8_t> data;
+    if (!Request(LINK_CMD_ARCREAD, req.data(), static_cast<uint32_t>(req.size()), status, &data)) {
+        return; // connection gone; the next connect tries again
+    }
+    if (status == LINK_ERR_BADCMD) {
+        PushMessage(Text("mii_old_app"));
+        return;
+    }
+    if (status != LINK_OK || data.size() < 8) {
+        PushMessage(Text("mii_failed"));
+        return;
+    }
+
+    const std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir) +
+                            "data/00000000000000000000000000000000/extdata/00048000/F000000B/user/";
+    const std::string path = dir + "CFL_DB.dat";
+    std::string current;
+    if (FileUtil::Exists(path)) {
+        FileUtil::ReadFileToString(false, path, current);
+    }
+    if (current.size() == data.size() && std::memcmp(current.data(), data.data(), data.size()) == 0) {
+        if (report_unchanged) {
+            PushMessage(Text("mii_same"));
+        }
+        return;
+    }
+    FileUtil::CreateFullPath(dir);
+    const std::string keep = path + ".before-3ds-link";
+    if (!current.empty() && !FileUtil::Exists(keep)) {
+        FileUtil::Copy(path, keep); // Azahar's own Miis, kept once
+    }
+    const std::string_view bytes(reinterpret_cast<const char*>(data.data()), data.size());
+    if (FileUtil::WriteStringToFile(false, path, bytes) != data.size()) {
+        PushMessage(Text("mii_failed"));
+        return;
+    }
+    PushMessage(Text("mii_done"));
+}
+
 void Client::Worker(std::string host) {
     sockaddr_in tcp_addr = {};
     if (!Resolve(host, LINK_TCP_PORT, tcp_addr)) {
@@ -474,6 +532,8 @@ void Client::Worker(std::string host) {
         }
 
         session_dirty = true;
+        mii_sync_wanted = false;
+        SyncMiis(false);
         int64_t last_hello = 0;
         int64_t last_ping = NowMs();
         bool lost_by_lid = false;
@@ -493,6 +553,9 @@ void Client::Worker(std::string host) {
                 last_ping = t;
                 if (session_dirty) {
                     SendSession();
+                }
+                if (mii_sync_wanted.exchange(false)) {
+                    SyncMiis(true);
                 }
             }
             // closed: it goes to sleep. Drop the connection now and keep knocking,

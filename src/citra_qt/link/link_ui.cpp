@@ -41,6 +41,8 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     }
     connect_action = menu->addAction(Q("connect"));
     disconnect_action = menu->addAction(Q("disconnect"));
+    QAction* mii_action = menu->addAction(Q("miisync"));
+    connect(mii_action, &QAction::triggered, this, [] { Get().RequestMiiSync(); });
     menu->addSeparator();
     auto_action = menu->addAction(Q("autoconnect"));
     auto_action->setCheckable(true);
