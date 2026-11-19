@@ -22,6 +22,12 @@
 #include <QStatusBar>
 #include <QTimer>
 
+#include <set>
+#include <QFileInfo>
+#include <QStandardItemModel>
+#include "citra_qt/game_list.h"
+#include "citra_qt/game_list_p.h"
+#include "citra_qt/uisettings.h"
 #include "citra_qt/link/link_client.h"
 #include "citra_qt/link/link_save.h"
 #include "citra_qt/link/link_ui.h"
@@ -40,10 +46,69 @@ namespace {
 QString Q(const char* key) {
     return QString::fromStdString(Text(key));
 }
+
+// text for the 3DS tab: no tabs or line breaks inside the fields
+std::string Field(const QString& s) {
+    std::string out = s.toStdString();
+    for (char& c : out) {
+        if (c == '\t' || c == '\n' || c == '\r') {
+            c = ' ';
+        }
+    }
+    return out;
+}
+
+void CollectGames(QStandardItem* parent, std::set<QString>& seen, std::string& out,
+                  std::map<u64, std::string>& names) {
+    for (int r = 0; r < parent->rowCount(); ++r) {
+        QStandardItem* item = parent->child(r, 0);
+        if (!item) {
+            continue;
+        }
+        const QString path = item->data(GameListItemPath::FullPathRole).toString();
+        if (!path.isEmpty() && !seen.count(path)) {
+            seen.insert(path);
+            const u64 tid = item->data(GameListItemPath::ProgramIdRole).toULongLong();
+            QString name = item->data(GameListItemPath::TitleRole).toString();
+            if (name.isEmpty()) {
+                name = QFileInfo(path).completeBaseName();
+            }
+            out += fmt::format("{:016X}\t{}\t{}\n", tid, Field(path), Field(name));
+            if (tid) {
+                names[tid] = Field(name);
+            }
+        }
+        if (item->hasChildren()) {
+            CollectGames(item, seen, out, names);
+        }
+    }
+}
 } // namespace
+
+// Azahar's game list goes to the 3DS tab of the app
+void LinkUi::UpdateLibrary() {
+    if (!game_list) {
+        return;
+    }
+    std::set<QString> seen;
+    std::string text;
+    std::map<u64, std::string> names;
+    QStandardItemModel* model = game_list->GetModel();
+    if (model) {
+        CollectGames(model->invisibleRootItem(), seen, text, names);
+    }
+    library_names = std::move(names);
+    Get().SetLibrary(text);
+}
 
 LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     instance = this;
+    game_list = window->findChild<GameList*>();
+    stop_action = window->findChild<QAction*>(QStringLiteral("action_Stop"));
+    if (game_list) {
+        connect(game_list, &GameList::PopulatingCompleted, this, [this] { UpdateLibrary(); });
+        QTimer::singleShot(0, this, [this] { UpdateLibrary(); }); // in case it is done already
+    }
     const std::string path =
         FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) + "3ds-link.ini";
     settings = new QSettings(QString::fromStdString(path), QSettings::IniFormat, this);
@@ -360,8 +425,46 @@ void LinkUi::ShowQueued() {
     shown_until = now + 7000;
 }
 
+// wishes from the 3DS: start a game from the list, end the game, send the list again
+void LinkUi::HandleRemote() {
+    static bool busy = false; // starting a game can show dialogs (and run this timer again)
+    if (busy) {
+        return;
+    }
+    Client& client = Get();
+    Core::System& system = Core::System::GetInstance();
+    if (client.TakeLibraryRequest() && game_list) {
+        game_list->PopulateAsync(UISettings::values.game_dirs); // then UpdateLibrary
+        client.ResendLibrary();
+    }
+    if (client.TakeStopRequest() && system.IsPoweredOn() && stop_action) {
+        busy = true;
+        stop_action->trigger();
+        busy = false;
+    }
+    std::string path;
+    if (client.TakeLaunchRequest(path)) {
+        const QString game = QString::fromStdString(path);
+        if (!game_list || !QFileInfo::exists(game)) {
+            Log("3DS: cannot start " + path + " (not found)");
+            client.LaunchFailed();
+            return;
+        }
+        busy = true;
+        if (system.IsPoweredOn() && stop_action) {
+            stop_action->trigger(); // the 3DS asked before switching
+        }
+        emit game_list->GameChosen(game);
+        busy = false;
+        if (!system.IsPoweredOn()) {
+            client.LaunchFailed(); // cancelled or failed: the 3DS stops waiting
+        }
+    }
+}
+
 void LinkUi::Poll() {
     Client& client = Get();
+    HandleRemote();
 
     // the running game, for the 3DS app
     Core::System& system = Core::System::GetInstance();
@@ -370,7 +473,15 @@ void LinkUi::Poll() {
         game_running = running;
         std::string title;
         if (running) {
-            system.GetAppLoader().ReadTitle(title, true);
+            // the name the 3DS list shows, so the 3DS knows it is the game it picked
+            u64 pid = 0;
+            system.GetAppLoader().ReadProgramId(pid);
+            const auto it = library_names.find(pid);
+            if (it != library_names.end()) {
+                title = it->second;
+            } else {
+                system.GetAppLoader().ReadTitle(title, true);
+            }
         }
         client.SetGameName(title);
     }

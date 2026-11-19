@@ -407,9 +407,57 @@ void Client::SetGameName(const std::string& name) {
     }
 }
 
+void Client::SetLibrary(const std::string& text) {
+    std::scoped_lock lock{library_mutex};
+    if (text != library_text) {
+        library_text = text;
+        library_dirty = true;
+    }
+}
+
+bool Client::TakeLaunchRequest(std::string& path) {
+    if (!launch_wanted.exchange(false)) {
+        return false;
+    }
+    std::scoped_lock lock{library_mutex};
+    path = launch_path;
+    return true;
+}
+
+// the game list for the 3DS tab (never waits for a busy connection)
+void Client::SendLibrary() {
+    if (library_unsupported) {
+        library_dirty = false;
+        return;
+    }
+    std::string text;
+    {
+        std::scoped_lock lock{library_mutex};
+        text = library_text;
+    }
+    if (text.size() > LINK_MAX_PAYLOAD) {
+        text.resize(text.rfind('\n', LINK_MAX_PAYLOAD - 1) + 1);
+    }
+    library_dirty = false;
+    uint16_t status = 0;
+    const int res = TryRequest(LINK_CMD_LIBRARY, text.data(), static_cast<uint32_t>(text.size()),
+                               status);
+    if (res != 1) {
+        library_dirty = true; // try again in a moment
+    } else if (status == LINK_ERR_BADCMD) {
+        library_unsupported = true;
+        Log("library: the 3DS app is too old for the 3DS game list");
+    } else {
+        Log("library: sent " + std::to_string(text.size()) + " bytes");
+    }
+}
+
 // tell the 3DS which game runs (never waits for a busy connection)
 void Client::SendSession() {
     std::vector<uint8_t> payload(1, 0);
+    if (launch_failed.exchange(false)) {
+        payload[0] = LINK_SESSION_LAUNCH_DONE;
+    }
     {
         std::scoped_lock lock{session_mutex};
         payload.insert(payload.end(), game_name.begin(), game_name.end());
@@ -506,7 +554,22 @@ int Client::PollEvents() {
         video_wanted = on;
         UpdateCapture();
     }
-    // other events (game list, screenshots, backups...) are melonDS features
+    if (ev.type == LINK_EVENT_LAUNCH) {
+        // a game picked on the 3DS: the path from our own game list
+        const size_t len = std::min<size_t>(ev.romPathLen, out.size() - sizeof(ev));
+        {
+            std::scoped_lock lock{library_mutex};
+            launch_path.assign(reinterpret_cast<const char*>(out.data() + sizeof(ev)), len);
+        }
+        launch_wanted = true;
+        Log("3DS: start " + std::string(reinterpret_cast<const char*>(out.data() + sizeof(ev)), len));
+    } else if (ev.type == LINK_EVENT_STOPGAME) {
+        stop_game_wanted = true;
+        Log("3DS: end the game");
+    } else if (ev.type == LINK_EVENT_LIBRARY) {
+        library_wanted = true;
+    }
+    // other events (screenshots, backups...) are melonDS features
     return 1;
 }
 
@@ -533,10 +596,10 @@ void Client::ReadConsoleClock() {
                            std::chrono::system_clock::now().time_since_epoch())
                            .count();
     uint64_t user_offset = 0;
-    const bool has_user_offset = out.size() >= 16;
-    if (has_user_offset) {
+    if (out.size() >= 16) {
         std::memcpy(&user_offset, out.data() + 8, 8);
     }
+    const bool has_user_offset = out.size() >= 16 && user_offset != LINK_TIME_UNKNOWN;
     clock_user_offset = user_offset;
     clock_has_user_offset = has_user_offset;
     clock_delta = console - pc;
@@ -544,11 +607,14 @@ void Client::ReadConsoleClock() {
     Log("clock: 3DS minus PC (UTC) = " + std::to_string(console - pc) + " s" +
         (has_user_offset ? ", user time offset " + std::to_string(static_cast<int64_t>(user_offset))
                          : std::string(", user time offset unknown (old app)")));
-    if (out.size() >= 24) {
-        // the raw hardware clock next to the shown time, both as the 3DS has them
-        uint64_t rtc_ms = 0;
-        std::memcpy(&rtc_ms, out.data() + 16, 8);
+    if (out.size() >= 40) {
+        // the clock values next to each other, to find out what they mean
+        uint64_t v[5] = {};
+        std::memcpy(v, out.data(), sizeof(v));
         const auto as_text = [](uint64_t ms) {
+            if (ms == LINK_TIME_UNKNOWN) {
+                return std::string("?");
+            }
             const std::time_t t = static_cast<std::time_t>(ms / 1000 - 2208988800ULL);
             std::tm tm{};
 #ifdef _WIN32
@@ -560,12 +626,27 @@ void Client::ReadConsoleClock() {
             std::strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M:%S", &tm);
             return std::string(buf);
         };
-        const double hours = (static_cast<double>(ms_since_1900) - static_cast<double>(rtc_ms)) /
-                             3'600'000.0;
-        char diff[64];
-        std::snprintf(diff, sizeof(diff), "%.2f h", hours);
-        Log("clock: shown " + as_text(ms_since_1900) + ", hardware clock (RTC) " +
-            as_text(rtc_ms) + ", shown minus RTC = " + diff);
+        const auto diff = [](uint64_t a, uint64_t b) {
+            if (a == LINK_TIME_UNKNOWN || b == LINK_TIME_UNKNOWN) {
+                return std::string("?");
+            }
+            char buf[64];
+            const int64_t d = static_cast<int64_t>(a - b);
+            std::snprintf(buf, sizeof(buf), "%lld ms (%.2f h)", static_cast<long long>(d),
+                          static_cast<double>(d) / 3'600'000.0);
+            return std::string(buf);
+        };
+        Log("clock: shown " + as_text(v[0]) + " | RTC registers " + as_text(v[2]) +
+            " | RTC as the system reads it " + as_text(v[3]));
+        Log("clock: shown - RTC registers = " + diff(v[0], v[2]) +
+            ", shown - system RTC = " + diff(v[0], v[3]) +
+            ", system RTC - RTC registers = " + diff(v[3], v[2]));
+        Log("clock: block 0x30001 = " +
+            (v[1] == LINK_TIME_UNKNOWN ? std::string("?")
+                                       : std::to_string(static_cast<int64_t>(v[1]))) +
+            ", block 0x30002 = " +
+            (v[4] == LINK_TIME_UNKNOWN ? std::string("?")
+                                       : std::to_string(static_cast<int64_t>(v[4]))));
     }
 }
 
@@ -1057,6 +1138,8 @@ void Client::Worker(std::string host) {
         }
 
         session_dirty = true;
+        library_dirty = true;
+        library_unsupported = false;
         mii_sync_wanted = false;
         ReadConsoleClock();
         if (option_miis) {
@@ -1089,6 +1172,9 @@ void Client::Worker(std::string host) {
                 last_ping = t;
                 if (session_dirty) {
                     SendSession();
+                }
+                if (library_dirty) {
+                    SendLibrary();
                 }
                 if (mii_sync_wanted.exchange(false)) {
                     SyncMiis(true);

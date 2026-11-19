@@ -62,6 +62,29 @@ public:
     /// Name of the running game (empty = none), shown in the 3DS app.
     void SetGameName(const std::string& name);
 
+    /// Azahar's game list for the 3DS tab of the app ("title id TAB path TAB name" lines);
+    /// sent whenever it changes and on every connect.
+    void SetLibrary(const std::string& text);
+    /// A game picked on the 3DS (its path in Azahar's game list); true once per pick.
+    bool TakeLaunchRequest(std::string& path);
+    /// The 3DS asked to end the running game; true once.
+    bool TakeStopRequest() {
+        return stop_game_wanted.exchange(false);
+    }
+    /// The 3DS asked for the game list again (Y); true once.
+    bool TakeLibraryRequest() {
+        return library_wanted.exchange(false);
+    }
+    /// Send the game list again even if it did not change.
+    void ResendLibrary() {
+        library_dirty = true;
+    }
+    /// A pick from the 3DS did not start a game (cancelled or failed): the 3DS stops waiting.
+    void LaunchFailed() {
+        launch_failed = true;
+        session_dirty = true;
+    }
+
     /// Settings (3DS Link > Settings): what happens on every connect.
     std::atomic<bool> option_miis{true};       // take the Miis of the 3DS
     std::atomic<bool> option_system_data{true}; // take missing system data from the 3DS
@@ -167,6 +190,16 @@ private:
     std::mutex session_mutex;
     std::string game_name;
     std::atomic<bool> session_dirty{false}; // the 3DS does not know the game yet
+    std::atomic<bool> launch_failed{false};
+    std::mutex library_mutex;
+    std::string library_text;
+    std::atomic<bool> library_dirty{false};
+    std::atomic<bool> library_unsupported{false}; // the app on the 3DS is older
+    std::string launch_path;
+    std::atomic<bool> launch_wanted{false};
+    std::atomic<bool> stop_game_wanted{false};
+    std::atomic<bool> library_wanted{false};
+    void SendLibrary();
     void SendSession();
 
     std::atomic<bool> clock_new{false};

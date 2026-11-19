@@ -14,6 +14,10 @@
 #include <atomic>
 #include <optional>
 
+#include <map>
+#include <string>
+
+class GameList;
 class QAction;
 class QLabel;
 class QMainWindow;
@@ -43,6 +47,8 @@ private:
     void OnDisconnect();
     void OnAutoConnect(bool on);
     void Poll();
+    void UpdateLibrary();
+    void HandleRemote();
 
     QMainWindow* window;
     QSettings* settings;
@@ -51,6 +57,9 @@ private:
     QAction* auto_action;
     QLabel* status_label;
     QTimer* timer;
+    GameList* game_list = nullptr;
+    QAction* stop_action = nullptr;
+    std::map<u64, std::string> library_names; // program id -> name in the 3DS list
     bool game_running = false;
     bool option_clock = true;
     /// how a game's save is handled when it starts: 0 ask, 1 always from the 3DS, 2 never
