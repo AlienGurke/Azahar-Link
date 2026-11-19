@@ -91,6 +91,9 @@ public:
     bool ArcRead(const LinkArchiveReq& archive, const std::string& path,
                  std::vector<uint8_t>& data, uint16_t& status);
     bool ArcInfo(const LinkArchiveReq& archive, LinkFormatInfo& info, uint16_t& status);
+    /// Size and FNV-1a 64 of a whole file (false + status BADCMD: the app is too old).
+    bool ArcHash(const LinkArchiveReq& archive, const std::string& path, uint64_t& size,
+                 uint64_t& hash, uint16_t& status);
     /// The 3DS result code of the last archive call that failed (0 = none sent).
     uint32_t LastArcResult() const {
         return last_arc_result.load();
@@ -147,6 +150,7 @@ private:
     void ReadConsoleClock();
 
     std::atomic<uint32_t> last_arc_result{0};
+    std::atomic<bool> arc_compressed{true}; // the app knows LINK_CMD_ARCREADZ
     void NoteArcResult(uint16_t status, const std::vector<uint8_t>& out);
 
     std::atomic<bool> mii_sync_wanted{false};

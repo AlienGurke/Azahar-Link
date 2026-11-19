@@ -37,6 +37,7 @@ typedef int sock_t;
 
 #include "citra_qt/link/link_client.h"
 #include "citra_qt/link/link_save.h"
+#include "citra_qt/link/lz4/lz4.h"
 #include "citra_qt/uisettings.h"
 #include "common/file_util.h"
 #include "core/hle/service/hid/hid.h"
@@ -522,9 +523,88 @@ bool Client::ArcList(const LinkArchiveReq& archive, const std::string& dir,
     return true;
 }
 
+bool Client::ArcHash(const LinkArchiveReq& archive, const std::string& path, uint64_t& size,
+                     uint64_t& hash, uint16_t& status) {
+    std::vector<uint8_t> req(sizeof(archive));
+    std::memcpy(req.data(), &archive, sizeof(archive));
+    req.insert(req.end(), path.begin(), path.end());
+    std::vector<uint8_t> out;
+    if (!Request(LINK_CMD_ARCHASH, req.data(), static_cast<uint32_t>(req.size()), status, &out)) {
+        return false;
+    }
+    NoteArcResult(status, out);
+    if (status == LINK_OK) {
+        if (out.size() < 16) {
+            status = LINK_ERR_IO;
+        } else {
+            std::memcpy(&size, out.data(), 8);
+            std::memcpy(&hash, out.data() + 8, 8);
+        }
+    }
+    return true;
+}
+
 bool Client::ArcRead(const LinkArchiveReq& archive, const std::string& path,
                      std::vector<uint8_t>& data, uint16_t& status) {
     data.clear();
+    // compressed pieces (saves are often mostly empty); older apps only know ARCREAD
+    while (arc_compressed) {
+        LinkArchiveReq ar = archive;
+        ar.offset = static_cast<uint32_t>(data.size());
+        ar.length = LINK_ARCZ_MAX_CHUNK;
+        std::vector<uint8_t> req(sizeof(ar));
+        std::memcpy(req.data(), &ar, sizeof(ar));
+        req.insert(req.end(), path.begin(), path.end());
+        std::vector<uint8_t> part;
+        if (!Request(LINK_CMD_ARCREADZ, req.data(), static_cast<uint32_t>(req.size()), status,
+                     &part)) {
+            return false;
+        }
+        if (status == LINK_ERR_BADCMD) {
+            arc_compressed = false;
+            data.clear();
+            break;
+        }
+        if (status != LINK_OK) {
+            NoteArcResult(status, part);
+            return true;
+        }
+        LinkArcChunk c;
+        if (part.size() < sizeof(c)) {
+            status = LINK_ERR_IO;
+            return true;
+        }
+        std::memcpy(&c, part.data(), sizeof(c));
+        if (c.totalSize > 64 * 1024 * 1024 || c.rawLen > LINK_ARCZ_MAX_CHUNK ||
+            data.size() + c.rawLen > c.totalSize) {
+            status = LINK_ERR_IO;
+            return true;
+        }
+        const size_t at = data.size();
+        data.resize(at + c.rawLen);
+        const char* src = reinterpret_cast<const char*>(part.data() + sizeof(c));
+        const int src_len = static_cast<int>(part.size() - sizeof(c));
+        if (c.mode == LINK_BLOCK_LZ4) {
+            if (LZ4_decompress_safe(src, reinterpret_cast<char*>(data.data() + at), src_len,
+                                    static_cast<int>(c.rawLen)) != static_cast<int>(c.rawLen)) {
+                status = LINK_ERR_IO;
+                return true;
+            }
+        } else if (c.mode == LINK_BLOCK_RAW && static_cast<uint32_t>(src_len) == c.rawLen) {
+            if (c.rawLen) {
+                std::memcpy(data.data() + at, src, c.rawLen);
+            }
+        } else {
+            status = LINK_ERR_IO;
+            return true;
+        }
+        if (c.rawLen == 0 || data.size() >= c.totalSize) {
+            if (data.size() != c.totalSize) {
+                status = LINK_ERR_IO;
+            }
+            return true;
+        }
+    }
     uint32_t total = 0;
     // in pieces: one answer holds at most LINK_MAX_PAYLOAD
     do {

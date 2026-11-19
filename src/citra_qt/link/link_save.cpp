@@ -10,6 +10,7 @@
 #include <fstream>
 #include <map>
 #include <system_error>
+#include <tuple>
 #include <vector>
 
 #include <fmt/format.h>
@@ -47,9 +48,35 @@ struct Tree {
     uint64_t bytes = 0;
 };
 
-// 1 = read, 0 = the archive does not exist (or is not accessible), -1 = error
+uint64_t Fnv64(const std::vector<uint8_t>& data) {
+    uint64_t h = LINK_FNV64_INIT;
+    for (const uint8_t b : data) {
+        h = (h ^ b) * LINK_FNV64_PRIME;
+    }
+    return h;
+}
+
+bool ReadFile(const fs::path& path, std::vector<uint8_t>& data) {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (ec) {
+        return false;
+    }
+    data.resize(static_cast<size_t>(size));
+    std::ifstream f(path, std::ios::binary);
+    if (size) {
+        f.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size));
+    }
+    return static_cast<bool>(f);
+}
+
+// 1 = read, 0 = the archive does not exist (or is not accessible), -1 = error.
+// `cache`: the copy from the last time; files whose size and hash on the 3DS still match it
+// are taken from there instead of over the WiFi (empty = no cache).
 int ReadTree(Client& client, const LinkArchiveReq& archive, Tree& tree, std::string& error,
-             const std::function<void(const std::string&)>& progress, const std::string& what) {
+             const std::function<void(const std::string&)>& progress, const std::string& what,
+             const fs::path& cache = {}) {
+    bool use_cache = !cache.empty();
     std::vector<std::string> todo = {"/"};
     bool first = true;
     while (!todo.empty()) {
@@ -87,13 +114,35 @@ int ReadTree(Client& client, const LinkArchiveReq& archive, Tree& tree, std::str
             }
             progress(fmt::format("{}: {}", what, path));
             std::vector<uint8_t> data;
-            if (!client.ArcRead(archive, path, data, status)) {
-                error = Text("save_conn_lost");
-                return -1;
+            bool from_cache = false;
+            if (use_cache) {
+                std::vector<uint8_t> cached;
+                if (ReadFile(cache / U8(path.substr(1)), cached)) {
+                    uint64_t size = 0, hash = 0;
+                    if (!client.ArcHash(archive, path, size, hash, status)) {
+                        error = Text("save_conn_lost");
+                        return -1;
+                    }
+                    if (status == LINK_ERR_BADCMD) {
+                        use_cache = false; // older app: read everything
+                    } else if (status == LINK_OK && size == cached.size() &&
+                               hash == Fnv64(cached)) {
+                        data = std::move(cached);
+                        from_cache = true;
+                    }
+                }
             }
-            if (status != LINK_OK || data.size() != e.size) {
-                error = fmt::format("{} ({}: {})", Text("save_read_failed"), path, status);
-                return -1;
+            // the size comes from the file itself (directory listings of extdata can show
+            // another one); ArcRead checks that all of it arrived
+            if (!from_cache) {
+                if (!client.ArcRead(archive, path, data, status)) {
+                    error = Text("save_conn_lost");
+                    return -1;
+                }
+                if (status != LINK_OK) {
+                    error = fmt::format("{} ({}: {})", Text("save_read_failed"), path, status);
+                    return -1;
+                }
             }
             tree.bytes += data.size();
             tree.files[path] = std::move(data);
@@ -319,6 +368,8 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     const std::string tid = fmt::format("{:016X}", program_id);
 
     // --- 1. read everything from the 3DS (nothing is written there) ---
+    const fs::path cache = U8(FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
+                              "3ds-link/cache/" + tid);
     Tree save;
     std::string error;
     int found = 0;
@@ -326,7 +377,8 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     for (const u32 media : {LINK_MEDIA_SD, LINK_MEDIA_GAMECARD}) {
         const LinkArchiveReq ar = {LINK_ARCHIVE_USER_SAVEDATA, media, low, high, 0, 0};
         save = Tree{};
-        found = ReadTree(client, ar, save, error, progress, Text("save_reading"));
+        found = ReadTree(client, ar, save, error, progress, Text("save_reading"),
+                         cache / "save");
         if (found != 0) {
             break;
         }
@@ -368,7 +420,8 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     const u32 ext_id = extdata_id != 0 ? static_cast<u32>(extdata_id) : low >> 8;
     Tree ext;
     const LinkArchiveReq ext_ar = {LINK_ARCHIVE_EXTDATA, LINK_MEDIA_SD, ext_id, 0, 0, 0};
-    const int ext_found = ReadTree(client, ext_ar, ext, error, progress, Text("save_reading_ext"));
+    const int ext_found = ReadTree(client, ext_ar, ext, error, progress, Text("save_reading_ext"),
+                                   cache / "extdata");
     if (ext_found < 0) {
         result.message = error;
         return result;
@@ -464,6 +517,19 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
             fs::remove_all(ext_new, ec);
             result.message = Format(Text("save_write_failed"), FromPath(ext_dir));
             return result;
+        }
+    }
+
+    // the copy for next time (only read again what changed on the 3DS)
+    for (const auto& [tree, name, ok] :
+         {std::tuple{&save, "save", true}, std::tuple{&ext, "extdata", ext_found > 0}}) {
+        const fs::path dst = cache / name;
+        fs::path tmp = dst;
+        tmp += U8(".new");
+        fs::remove_all(tmp, ec);
+        if (!ok || !WriteTree(*tree, tmp) || !SwapIn(tmp, dst)) {
+            fs::remove_all(tmp, ec);
+            fs::remove_all(dst, ec); // never keep a cache that may not match
         }
     }
 
