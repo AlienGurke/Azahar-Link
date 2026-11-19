@@ -115,10 +115,15 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     };
     add_option("opt_clock", "clock", [this](bool on) {
         option_clock = on;
-        if (!on) { // Azahar's own clock again, and its own time offset
+        // the user time offset of the 3DS, kept from the last connect, so games started
+        // without the 3DS see the same raw clock too; off: Azahar's own offset again
+        const QVariant stored = settings->value(QStringLiteral("user_time_offset"));
+        if (on && stored.isValid()) {
+            link_user_offset = static_cast<u64>(stored.toULongLong());
+        } else {
             link_user_offset.reset();
-            Service::CFG::SetLinkUserTimeOffset(std::nullopt);
         }
+        Service::CFG::SetLinkUserTimeOffset(link_user_offset);
     });
     add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
@@ -392,6 +397,10 @@ void LinkUi::Poll() {
         const bool offset_changes = new_user_offset != link_user_offset;
         link_user_offset = new_user_offset;
         Service::CFG::SetLinkUserTimeOffset(new_user_offset);
+        if (new_user_offset) {
+            settings->setValue(QStringLiteral("user_time_offset"),
+                               static_cast<qulonglong>(*new_user_offset));
+        }
         const bool clock_changes =
             Settings::values.init_clock.GetValue() != Settings::InitClock::SystemTime ||
             std::abs(Settings::values.init_time_offset.GetValue() - offset) > 2 ||
