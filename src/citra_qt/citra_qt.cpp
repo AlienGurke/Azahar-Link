@@ -1869,6 +1869,9 @@ void GMainWindow::ShutdownGame() {
     // When closing the game, destroy the GLWindow to clear the context after the game is closed
     render_window->ReleaseRenderTarget();
     secondary_window->ReleaseRenderTarget();
+
+    // 3DS Link: the save back to the 3DS (if switched on)
+    Link::LinkUi::AfterShutdown(this);
 }
 
 #ifdef ENABLE_DEVELOPER_OPTIONS

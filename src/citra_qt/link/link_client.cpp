@@ -263,6 +263,36 @@ std::string Text(const char* key) {
         {"opt_save_ask", {"Ask", "Fragen"}},
         {"opt_save_always", {"Always load from the 3DS", "Immer vom 3DS laden"}},
         {"opt_save_never", {"Never (use the PC save)", "Nie (Spielstand vom PC nutzen)"}},
+        {"opt_write", {"Write the save back to the 3DS when the game stops",
+                       "Spielstand beim Beenden auf den 3DS zurückschreiben"}},
+        {"opt_write_ask", {"Ask before writing to the 3DS", "Vor dem Schreiben auf den 3DS fragen"}},
+        {"write_title", {"Save to the 3DS", "Spielstand auf den 3DS"}},
+        {"write_ask", {"Write the save of this game back to the 3DS?\n\nThe save on the 3DS is "
+                       "kept as a backup on the PC first.",
+                       "Den Spielstand dieses Spiels auf den 3DS zurückschreiben?\n\nDer "
+                       "Spielstand auf dem 3DS wird vorher am PC gesichert."}},
+        {"write_no_3ds", {"The 3DS is not connected: the save was NOT written back to it.",
+                          "Der 3DS ist nicht verbunden: Der Spielstand wurde NICHT auf ihn "
+                          "zurückgeschrieben."}},
+        {"write_no_base", {"The save was not loaded from the 3DS, so it is not written back.",
+                           "Der Spielstand wurde nicht vom 3DS geladen, darum wird er nicht "
+                           "zurückgeschrieben."}},
+        {"write_nothing", {"The 3DS has this save already", "Der 3DS hat diesen Spielstand schon"}},
+        {"write_checking", {"Checking the save on the 3DS...", "Prüfe den Spielstand auf dem 3DS..."}},
+        {"write_conflict", {"The save on the 3DS changed since it was loaded (played on the 3DS "
+                            "meanwhile?). Nothing was written; both saves are unchanged.",
+                            "Der Spielstand auf dem 3DS hat sich seit dem Laden geändert "
+                            "(zwischendurch auf dem 3DS gespielt?). Es wurde nichts geschrieben, "
+                            "beide Spielstände sind unverändert."}},
+        {"write_writing", {"Writing", "Schreibe"}},
+        {"write_verifying", {"Checking what was written...", "Prüfe das Geschriebene..."}},
+        {"write_verify_failed", {"what was written did not check out; the 3DS keeps its save",
+                                 "das Geschriebene stimmte nicht; der 3DS behält seinen Spielstand"}},
+        {"save_write_3ds_failed", {"writing to the 3DS failed", "Schreiben auf den 3DS fehlgeschlagen"}},
+        {"write_done", {"Save written back to the 3DS (checked)",
+                        "Spielstand auf den 3DS zurückgeschrieben (geprüft)"}},
+        {"write_failed", {"The save could not be written to the 3DS:\n%1",
+                          "Der Spielstand konnte nicht auf den 3DS geschrieben werden:\n%1"}},
         {"backups_open", {"Open the save backups folder", "Ordner mit den Spielstand-Sicherungen öffnen"}},
         {"miisync", {"Take the Miis from the 3DS now", "Miis jetzt vom 3DS übernehmen"}},
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
@@ -593,6 +623,50 @@ bool TakeChunk(const std::vector<uint8_t>& part, std::vector<uint8_t>& data, uin
     return true;
 }
 } // namespace
+
+bool Client::ArcWrite(const LinkArchiveReq& archive, const std::string& path,
+                      const std::vector<uint8_t>& data, bool create, uint16_t& status) {
+    size_t pos = 0;
+    do {
+        const size_t len = std::min<size_t>(data.size() - pos, LINK_ARCZ_MAX_CHUNK);
+        LinkArcWriteReq w{};
+        w.archive = archive;
+        w.archive.offset = static_cast<uint32_t>(pos);
+        w.archive.length = static_cast<uint32_t>(len);
+        w.fileSize = static_cast<uint32_t>(data.size());
+        w.pathLen = static_cast<uint16_t>(path.size());
+        w.flags = (create && pos == 0) ? LINK_AW_CREATE : 0;
+        std::vector<uint8_t> req(sizeof(w));
+        std::memcpy(req.data(), &w, sizeof(w));
+        req.insert(req.end(), path.begin(), path.end());
+        req.insert(req.end(), data.begin() + static_cast<std::ptrdiff_t>(pos),
+                   data.begin() + static_cast<std::ptrdiff_t>(pos + len));
+        std::vector<uint8_t> out;
+        if (!Request(LINK_CMD_ARCWRITE, req.data(), static_cast<uint32_t>(req.size()), status,
+                     &out)) {
+            return false;
+        }
+        NoteArcResult(status, out);
+        if (status != LINK_OK) {
+            return true;
+        }
+        pos += len;
+    } while (pos < data.size());
+    return true;
+}
+
+bool Client::ArcSimple(uint16_t cmd, const LinkArchiveReq& archive, const std::string& path,
+                       uint16_t& status) {
+    std::vector<uint8_t> req(sizeof(archive));
+    std::memcpy(req.data(), &archive, sizeof(archive));
+    req.insert(req.end(), path.begin(), path.end());
+    std::vector<uint8_t> out;
+    if (!Request(cmd, req.data(), static_cast<uint32_t>(req.size()), status, &out)) {
+        return false;
+    }
+    NoteArcResult(status, out);
+    return true;
+}
 
 bool Client::ArcReadPart(const LinkArchiveReq& archive, const std::string& path, uint32_t offset,
                          uint32_t length, std::vector<uint8_t>& data, uint16_t& status) {

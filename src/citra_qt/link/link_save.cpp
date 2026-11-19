@@ -341,6 +341,316 @@ std::string NowName() {
 
 } // namespace
 
+namespace {
+
+// what the cache stands for: the media of the save and whether there is extdata
+void WriteCacheInfo(const fs::path& cache, u32 media, bool has_ext) {
+    const std::string text = fmt::format("media={}\nextdata={}\n", media, has_ext ? 1 : 0);
+    WriteFile(cache / "info.txt", text.data(), text.size());
+}
+
+bool ReadCacheInfo(const fs::path& cache, u32& media, bool& has_ext) {
+    std::vector<uint8_t> raw;
+    if (!ReadFile(cache / "info.txt", raw)) {
+        return false;
+    }
+    const std::string text(raw.begin(), raw.end());
+    const auto m = text.find("media=");
+    const auto e = text.find("extdata=");
+    if (m == std::string::npos || e == std::string::npos) {
+        return false;
+    }
+    media = static_cast<u32>(std::atoi(text.c_str() + m + 6));
+    has_ext = text[e + 8] == '1';
+    return media == LINK_MEDIA_SD || media == LINK_MEDIA_GAMECARD;
+}
+
+// a folder on the PC as a tree (all files read)
+bool LoadFolder(const fs::path& root, Tree& tree) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) {
+        return false;
+    }
+    for (auto it = fs::recursive_directory_iterator(root, ec); !ec && it != fs::end(it);
+         it.increment(ec)) {
+        const std::string rel =
+            "/" + FromPath(fs::relative(it->path(), root, ec).generic_u8string());
+        if (it->is_directory(ec)) {
+            tree.dirs.push_back(rel);
+            continue;
+        }
+        std::vector<uint8_t> data;
+        if (!ReadFile(it->path(), data)) {
+            return false;
+        }
+        tree.bytes += data.size();
+        tree.files[rel] = std::move(data);
+    }
+    return !ec;
+}
+
+struct Listing {
+    std::map<std::string, std::pair<uint64_t, uint64_t>> files; // path -> size, hash
+    std::vector<std::string> dirs;
+};
+
+Listing ListingOf(const Tree& tree) {
+    Listing l;
+    for (const auto& [path, data] : tree.files) {
+        l.files[path] = {data.size(), Fnv64(data)};
+    }
+    l.dirs = tree.dirs;
+    std::sort(l.dirs.begin(), l.dirs.end());
+    return l;
+}
+
+// what the 3DS has, with the size and hash of every file (the 3DS reads them for it)
+bool List3DS(Client& client, const LinkArchiveReq& archive, Listing& out, std::string& error) {
+    std::vector<std::string> todo = {"/"};
+    while (!todo.empty()) {
+        const std::string dir = todo.back();
+        todo.pop_back();
+        std::vector<Client::DirEntry> entries;
+        uint16_t status = 0;
+        if (!client.ArcList(archive, dir, entries, status, true)) {
+            error = Text("save_conn_lost");
+            return false;
+        }
+        if (status != LINK_OK) {
+            error = fmt::format("{} ({}: {}, 0x{:08X})", Text("save_read_failed"), dir, status,
+                                client.LastArcResult());
+            return false;
+        }
+        for (const auto& e : entries) {
+            const std::string path = (dir == "/" ? "" : dir) + "/" + e.name;
+            if (e.is_dir) {
+                out.dirs.push_back(path);
+                todo.push_back(path);
+            } else {
+                out.files[path] = {e.size, e.hash};
+            }
+        }
+    }
+    std::sort(out.dirs.begin(), out.dirs.end());
+    return true;
+}
+
+bool SameListing(const Listing& a, const Listing& b) {
+    return a.files == b.files && a.dirs == b.dirs;
+}
+
+// writes `want` over what the 3DS has (`have`): new folders, changed and new files, then
+// what is gone. Returns false with `error` set.
+bool WriteDifferences(Client& client, const LinkArchiveReq& archive, const Tree& want,
+                      const Listing& have, std::string& error,
+                      const std::function<void(const std::string&)>& progress,
+                      const std::string& what) {
+    uint16_t status = 0;
+    const auto failed = [&](const std::string& path) {
+        error = fmt::format("{} ({}: {}, 0x{:08X})", Text("save_write_3ds_failed"), path, status,
+                            client.LastArcResult());
+        return false;
+    };
+    std::vector<std::string> new_dirs;
+    for (const auto& d : want.dirs) {
+        if (std::find(have.dirs.begin(), have.dirs.end(), d) == have.dirs.end()) {
+            new_dirs.push_back(d);
+        }
+    }
+    std::sort(new_dirs.begin(), new_dirs.end()); // parents first
+    for (const auto& d : new_dirs) {
+        if (!client.ArcSimple(LINK_CMD_ARCMKDIR, archive, d, status) || status != LINK_OK) {
+            return failed(d);
+        }
+    }
+    for (const auto& [path, data] : want.files) {
+        const auto old = have.files.find(path);
+        if (old != have.files.end() && old->second.first == data.size() &&
+            old->second.second == Fnv64(data)) {
+            continue; // unchanged
+        }
+        progress(fmt::format("{}: {}", what, path));
+        const bool create = old == have.files.end() || old->second.first != data.size();
+        if (!client.ArcWrite(archive, path, data, create, status) || status != LINK_OK) {
+            return failed(path);
+        }
+    }
+    for (const auto& [path, info] : have.files) {
+        if (want.files.find(path) == want.files.end()) {
+            if (!client.ArcSimple(LINK_CMD_ARCDELETE, archive, path, status) ||
+                (status != LINK_OK && status != LINK_ERR_NOTFOUND)) {
+                return failed(path);
+            }
+        }
+    }
+    std::vector<std::string> gone_dirs;
+    for (const auto& d : have.dirs) {
+        if (std::find(want.dirs.begin(), want.dirs.end(), d) == want.dirs.end()) {
+            gone_dirs.push_back(d);
+        }
+    }
+    std::sort(gone_dirs.rbegin(), gone_dirs.rend()); // children first
+    for (const auto& d : gone_dirs) {
+        LinkArchiveReq folder = archive;
+        folder.offset = 1; // the folder with everything in it
+        if (!client.ArcSimple(LINK_CMD_ARCDELETE, folder, d, status) ||
+            (status != LINK_OK && status != LINK_ERR_NOTFOUND)) {
+            return failed(d);
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+SaveExportResult ExportSaveTo3DS(u64 program_id, u64 extdata_id,
+                                 const std::function<void(const std::string&)>& progress) {
+    SaveExportResult result;
+    Client& client = Get();
+    const u32 high = static_cast<u32>(program_id >> 32);
+    const u32 low = static_cast<u32>(program_id & 0xFFFFFFFF);
+    const u32 ext_id = extdata_id != 0 ? static_cast<u32>(extdata_id) : low >> 8;
+    const std::string tid = fmt::format("{:016X}", program_id);
+    const auto started = std::chrono::steady_clock::now();
+    const auto seconds = [&] {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    };
+    Log(fmt::format("write: {} back to the 3DS", tid));
+    struct LogResult {
+        SaveExportResult& r;
+        ~LogResult() {
+            Log(fmt::format("write: result {} - {}", static_cast<int>(r.outcome), r.message));
+        }
+    } log_result{result};
+
+    // what the 3DS had when it was loaded (the cache), and what Azahar has now
+    const fs::path cache = U8(FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
+                              "3ds-link/cache/" + tid);
+    u32 media = LINK_MEDIA_SD;
+    bool has_ext = false;
+    Tree base_save, base_ext;
+    if (!ReadCacheInfo(cache, media, has_ext) || !LoadFolder(cache / "save", base_save) ||
+        (has_ext && !LoadFolder(cache / "extdata", base_ext))) {
+        result.outcome = SaveExportResult::Outcome::NoBaseline;
+        result.message = Text("write_no_base");
+        return result;
+    }
+    const std::string sdmc = FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir);
+    const fs::path save_dir =
+        U8(fmt::format("{}Nintendo 3DS/{}/{}/title/{:08x}/{:08x}/data/00000001", sdmc, kId, kId,
+                       high, low));
+    const fs::path ext_dir =
+        U8(fmt::format("{}Nintendo 3DS/{}/{}/extdata/00000000/{:08x}", sdmc, kId, kId, ext_id));
+    Tree pc_save, pc_ext;
+    if (!LoadFolder(save_dir, pc_save) || (has_ext && !LoadFolder(ext_dir / "user", pc_ext))) {
+        result.message = Format(Text("save_write_failed"), FromPath(save_dir));
+        return result;
+    }
+    const bool save_changed = !SameListing(ListingOf(pc_save), ListingOf(base_save));
+    const bool ext_changed = has_ext && !SameListing(ListingOf(pc_ext), ListingOf(base_ext));
+    if (!save_changed && !ext_changed) {
+        result.outcome = SaveExportResult::Outcome::NothingToDo;
+        result.message = Text("write_nothing");
+        return result;
+    }
+
+    // --- 1. the 3DS must still have exactly what was loaded ---
+    progress(Text("write_checking"));
+    const LinkArchiveReq save_ar = {LINK_ARCHIVE_USER_SAVEDATA, media, low, high, 0, 0};
+    const LinkArchiveReq ext_ar = {LINK_ARCHIVE_EXTDATA, LINK_MEDIA_SD, ext_id, 0, 0, 0};
+    std::string error;
+    Listing now_save, now_ext;
+    if (!List3DS(client, save_ar, now_save, error) ||
+        (has_ext && !List3DS(client, ext_ar, now_ext, error))) {
+        result.message = error;
+        return result;
+    }
+    if (!SameListing(now_save, ListingOf(base_save)) ||
+        (has_ext && !SameListing(now_ext, ListingOf(base_ext)))) {
+        result.outcome = SaveExportResult::Outcome::Conflict;
+        result.message = Text("write_conflict");
+        return result;
+    }
+
+    // --- 2. backup of the 3DS state (= the cache) and of what is written ---
+    progress(Text("save_backup"));
+    const fs::path title_backups = U8(BackupRoot() + tid);
+    const fs::path backup = title_backups / U8(NowName() + "-to-3ds");
+    if (!WriteTree(base_save, backup / "3ds-save-before") ||
+        (has_ext && !WriteTree(base_ext, backup / "3ds-extdata-before" / "user")) ||
+        !WriteTree(pc_save, backup / "pc-save-written") ||
+        (has_ext && !WriteTree(pc_ext, backup / "pc-extdata-written" / "user"))) {
+        result.message = Format(Text("save_write_failed"), FromPath(backup));
+        return result;
+    }
+    result.backup_dir = FromPath(backup);
+
+    // --- 3. the save: write, check every file on the 3DS, only then commit ---
+    uint16_t status = 0;
+    if (save_changed) {
+        if (!WriteDifferences(client, save_ar, pc_save, now_save, error, progress,
+                              Text("write_writing"))) {
+            client.ArcSimple(LINK_CMD_ARCCOMMIT, LinkArchiveReq{save_ar.archive, save_ar.mediaType,
+                                                                save_ar.lowId, save_ar.highId, 1, 0},
+                             "", status); // throw the changes away
+            result.message = error;
+            return result;
+        }
+        progress(Text("write_verifying"));
+        Listing check;
+        if (!List3DS(client, save_ar, check, error) || !SameListing(check, ListingOf(pc_save))) {
+            client.ArcSimple(LINK_CMD_ARCCOMMIT, LinkArchiveReq{save_ar.archive, save_ar.mediaType,
+                                                                save_ar.lowId, save_ar.highId, 1, 0},
+                             "", status);
+            result.message = error.empty() ? Text("write_verify_failed") : error;
+            return result;
+        }
+        if (!client.ArcSimple(LINK_CMD_ARCCOMMIT, save_ar, "", status) || status != LINK_OK) {
+            result.message = fmt::format("{} (commit: {}, 0x{:08X})", Text("save_write_3ds_failed"),
+                                         status, client.LastArcResult());
+            return result;
+        }
+    }
+
+    // --- 4. extdata (no commit there: written, then checked) ---
+    if (ext_changed) {
+        if (!WriteDifferences(client, ext_ar, pc_ext, now_ext, error, progress,
+                              Text("write_writing"))) {
+            result.message = error;
+            return result;
+        }
+        Listing check;
+        if (!List3DS(client, ext_ar, check, error) || !SameListing(check, ListingOf(pc_ext))) {
+            result.message = error.empty() ? Text("write_verify_failed") : error;
+            return result;
+        }
+        client.ArcSimple(LINK_CMD_ARCCOMMIT, ext_ar, "", status); // closes it
+    }
+
+    // --- 5. the cache is now what the 3DS has ---
+    std::error_code ec;
+    for (const auto& [tree, name, ok] : {std::tuple{&pc_save, "save", true},
+                                         std::tuple{&pc_ext, "extdata", has_ext}}) {
+        if (!ok) {
+            continue;
+        }
+        const fs::path dst = cache / name;
+        fs::path tmp = dst;
+        tmp += U8(".new");
+        fs::remove_all(tmp, ec);
+        if (!WriteTree(*tree, tmp) || !SwapIn(tmp, dst)) {
+            fs::remove_all(tmp, ec);
+            fs::remove_all(cache, ec); // never keep a cache that may not match
+            break;
+        }
+    }
+    PruneBackups(title_backups);
+    result.outcome = SaveExportResult::Outcome::Written;
+    result.message = Text("write_done");
+    Log(fmt::format("write: done after {:.1f} s", seconds()));
+    return result;
+}
+
 int CopySystemDataFrom3DS(std::string& message) {
     Client& client = Get();
     // the data archives Azahar knows (core/system_titles.cpp), of every region
@@ -503,9 +813,11 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     std::string error;
     int found = 0;
     std::string codes;
+    u32 save_media = LINK_MEDIA_SD;
     for (const u32 media : {LINK_MEDIA_SD, LINK_MEDIA_GAMECARD}) {
         const LinkArchiveReq ar = {LINK_ARCHIVE_USER_SAVEDATA, media, low, high, 0, 0};
         save = Tree{};
+        save_media = media;
         found = ReadTree(client, ar, save, error, progress, Text("save_reading"),
                          cache / "save");
         if (found != 0) {
@@ -575,7 +887,9 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     // Azahar has exactly this already (the usual case when nothing was played on the 3DS
     // and nothing on the PC): nothing to back up, nothing to write
     if (SameAsFolder(save, save_dir) && fs::exists(save_meta) &&
-        (ext_found == 0 || (SameAsFolder(ext, ext_dir / "user") && fs::exists(ext_dir / "metadata")))) {
+        (ext_found == 0 || (SameAsFolder(ext, ext_dir / "user") && fs::exists(ext_dir / "metadata"))) &&
+        fs::exists(cache / "save")) {
+        WriteCacheInfo(cache, save_media, ext_found > 0);
         result.outcome = SaveImportResult::Outcome::Imported;
         result.message = Text("save_same");
         Log(fmt::format("save: Azahar has the same save already, {:.1f} s", seconds()));
@@ -677,6 +991,7 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
         }
     }
 
+    WriteCacheInfo(cache, save_media, ext_found > 0);
     PruneBackups(title_backups);
     Log(fmt::format("save: done after {:.1f} s, backup {}", seconds(), result.backup_dir));
     result.outcome = SaveImportResult::Outcome::Imported;

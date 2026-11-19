@@ -98,6 +98,12 @@ public:
     bool ArcRead(const LinkArchiveReq& archive, const std::string& path,
                  std::vector<uint8_t>& data, uint16_t& status);
     bool ArcInfo(const LinkArchiveReq& archive, LinkFormatInfo& info, uint16_t& status);
+    /// Writes a whole file (in pieces); create: make it anew with this size.
+    bool ArcWrite(const LinkArchiveReq& archive, const std::string& path,
+                  const std::vector<uint8_t>& data, bool create, uint16_t& status);
+    /// Simple archive commands without data (ARCDELETE, ARCMKDIR, ARCCOMMIT).
+    bool ArcSimple(uint16_t cmd, const LinkArchiveReq& archive, const std::string& path,
+                   uint16_t& status);
     /// Part of a file (one request, at most LINK_ARCZ_MAX_CHUNK bytes).
     bool ArcReadPart(const LinkArchiveReq& archive, const std::string& path, uint32_t offset,
                      uint32_t length, std::vector<uint8_t>& data, uint16_t& status);

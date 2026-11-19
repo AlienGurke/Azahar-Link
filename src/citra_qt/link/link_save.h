@@ -34,6 +34,26 @@ struct SaveImportResult {
 SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
                                    const std::function<void(const std::string&)>& progress);
 
+struct SaveExportResult {
+    enum class Outcome {
+        Written,     // the 3DS has Azahar's save now (checked, committed)
+        NothingToDo, // Azahar's save is what the 3DS has
+        NoBaseline,  // the save was not loaded from the 3DS: nothing to compare with
+        Conflict,    // the save on the 3DS changed since it was loaded: nothing written
+        Failed,      // something went wrong: the 3DS keeps its save as it was
+    };
+    Outcome outcome = Outcome::Failed;
+    std::string message;
+    std::string backup_dir;
+};
+
+/// Step 2 of the save sync: Azahar's save (and extdata) back to the 3DS. Only allowed if the
+/// 3DS still has exactly what was loaded from it. Before writing, the 3DS state is kept as a
+/// backup; after writing, every file is checked on the 3DS before the save is committed
+/// (savedata changes only count from that moment). Blocking.
+SaveExportResult ExportSaveTo3DS(u64 program_id, u64 extdata_id,
+                                 const std::function<void(const std::string&)>& progress);
+
 /// The system data archives (Mii graphics CFL_Res, shared fonts, region and country data,
 /// ...) that Azahar lacks are copied from the 3DS's CTR-NAND, as they are stored there.
 /// Blocking. Returns the number of titles copied; `message` is set when something was

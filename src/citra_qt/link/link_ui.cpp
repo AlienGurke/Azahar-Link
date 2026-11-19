@@ -84,6 +84,19 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     add_option("opt_clock", "clock", [this](bool on) { option_clock = on; });
     add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
+    options->addSeparator();
+    {
+        // writing back is off until switched on on purpose
+        QAction* a = options->addAction(Q("opt_write"));
+        a->setCheckable(true);
+        write_back = settings->value(QStringLiteral("write_back"), false).toBool();
+        a->setChecked(write_back);
+        connect(a, &QAction::toggled, this, [this](bool on) {
+            write_back = on;
+            settings->setValue(QStringLiteral("write_back"), on);
+        });
+    }
+    add_option("opt_write_ask", "write_ask", [](bool on) { write_ask = on; });
     QMenu* save_menu = options->addMenu(Q("opt_save"));
     QActionGroup* save_group = new QActionGroup(save_menu);
     save_mode = settings->value(QStringLiteral("save_mode"), 0).toInt();
@@ -126,6 +139,70 @@ LinkUi::~LinkUi() {
 }
 
 int LinkUi::save_mode = 0;
+bool LinkUi::write_back = false;
+bool LinkUi::write_ask = true;
+u64 LinkUi::loaded_program_id = 0;
+u64 LinkUi::loaded_extdata_id = 0;
+
+void LinkUi::AfterShutdown(QWidget* parent) {
+    const u64 program_id = loaded_program_id;
+    const u64 extdata_id = loaded_extdata_id;
+    loaded_program_id = 0;
+    if (program_id == 0 || !write_back) {
+        return;
+    }
+    if (Get().GetState() != State::Connected) {
+        QMessageBox::warning(parent, Q("write_title"), Q("write_no_3ds"));
+        return;
+    }
+    if (write_ask && QMessageBox::question(parent, Q("write_title"), Q("write_ask")) !=
+                         QMessageBox::Yes) {
+        return;
+    }
+
+    QProgressDialog progress(Q("write_checking"), QString(), 0, 0, parent);
+    progress.setWindowTitle(Q("write_title"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setCancelButton(nullptr);
+    progress.setMinimumWidth(420);
+    progress.show();
+
+    SaveExportResult result;
+    QEventLoop loop;
+    std::thread worker([&] {
+        result = ExportSaveTo3DS(program_id, extdata_id, [&progress](const std::string& text) {
+            QMetaObject::invokeMethod(
+                &progress,
+                [&progress, label = QString::fromStdString(text)] { progress.setLabelText(label); },
+                Qt::QueuedConnection);
+        });
+        QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
+    });
+    loop.exec();
+    worker.join();
+    QCoreApplication::processEvents();
+    progress.close();
+
+    const QString message = QString::fromStdString(result.message);
+    switch (result.outcome) {
+    case SaveExportResult::Outcome::Written:
+    case SaveExportResult::Outcome::NothingToDo:
+        if (auto* main = qobject_cast<QMainWindow*>(parent)) {
+            main->statusBar()->showMessage(message, 10000);
+        }
+        break;
+    case SaveExportResult::Outcome::NoBaseline:
+    case SaveExportResult::Outcome::Conflict:
+        QMessageBox::warning(parent, Q("write_title"), message);
+        break;
+    case SaveExportResult::Outcome::Failed:
+    default:
+        QMessageBox::critical(parent, Q("write_title"),
+                              Q("write_failed").replace(QStringLiteral("%1"), message));
+        break;
+    }
+}
 
 bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
     if (Get().GetState() != State::Connected || save_mode == 2) {
@@ -187,6 +264,8 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
     const QString message = QString::fromStdString(result.message);
     switch (result.outcome) {
     case SaveImportResult::Outcome::Imported:
+        loaded_program_id = program_id; // its save may go back to the 3DS when it stops
+        loaded_extdata_id = extdata_id;
         if (auto* main = qobject_cast<QMainWindow*>(parent)) {
             main->statusBar()->showMessage(message, 10000);
         }

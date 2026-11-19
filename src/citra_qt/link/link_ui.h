@@ -10,6 +10,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include "common/common_types.h"
 #include <atomic>
 
 class QAction;
@@ -32,6 +33,10 @@ public:
     /// save from it (read only). Returns false if the user cancelled the start.
     static bool BeforeBoot(QWidget* parent, const QString& filename);
 
+    /// Called after a game stopped: writes its save back to the 3DS if that is switched on
+    /// and the save was loaded from the 3DS when the game started.
+    static void AfterShutdown(QWidget* parent);
+
 private:
     void OnConnect();
     void OnDisconnect();
@@ -49,6 +54,11 @@ private:
     bool option_clock = true;
     /// how a game's save is handled when it starts: 0 ask, 1 always from the 3DS, 2 never
     static int save_mode;
+    static bool write_back;     // write the save back when the game stops (off by default)
+    static bool write_ask;      // ask before that
+    // the game that runs, if its save came from the 3DS
+    static u64 loaded_program_id;
+    static u64 loaded_extdata_id;
     // messages are shown one after the other, each for a few seconds
     QStringList queued;
     qint64 shown_until = 0;
