@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -669,6 +670,11 @@ private:
 };
 
 std::shared_ptr<Module> GetModule(Core::System& system);
+
+/// Azahar-Link: the user time offset (config block 0x30001, shown time minus the RTC) of the
+/// real 3DS, put in place on the next boot. Games keep the raw RTC in their saves to spot a
+/// changed clock, so a save moved between the 3DS and Azahar needs the same offset on both.
+void SetLinkUserTimeOffset(std::optional<u64> offset);
 
 void InstallInterfaces(Core::System& system);
 

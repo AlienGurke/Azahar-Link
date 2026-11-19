@@ -28,6 +28,7 @@
 #include <ctime>
 #include <QDateTime>
 #include <fmt/format.h>
+#include "core/hle/service/cfg/cfg.h"
 #include "common/file_util.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -112,7 +113,13 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
             apply(value);
         });
     };
-    add_option("opt_clock", "clock", [this](bool on) { option_clock = on; });
+    add_option("opt_clock", "clock", [this](bool on) {
+        option_clock = on;
+        if (!on) { // Azahar's own clock again, and its own time offset
+            link_user_offset.reset();
+            Service::CFG::SetLinkUserTimeOffset(std::nullopt);
+        }
+    });
     add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
     options->addSeparator();
@@ -170,6 +177,7 @@ LinkUi::~LinkUi() {
 }
 
 int LinkUi::save_mode = 0;
+std::optional<u64> LinkUi::link_user_offset;
 LinkUi* LinkUi::instance = nullptr;
 bool LinkUi::write_back = false;
 bool LinkUi::write_ask = true;
@@ -377,9 +385,17 @@ void LinkUi::Poll() {
         epoch_tm.tm_isdst = 0;
         const int64_t zone = 946684800LL - static_cast<int64_t>(std::mktime(&epoch_tm));
         const int64_t offset = delta - dst - zone;
+        uint64_t user_offset = 0;
+        const bool has_user_offset = client.UserTimeOffset(user_offset);
+        const std::optional<u64> new_user_offset =
+            has_user_offset ? std::optional<u64>(user_offset) : std::nullopt;
+        const bool offset_changes = new_user_offset != link_user_offset;
+        link_user_offset = new_user_offset;
+        Service::CFG::SetLinkUserTimeOffset(new_user_offset);
         const bool clock_changes =
             Settings::values.init_clock.GetValue() != Settings::InitClock::SystemTime ||
-            std::abs(Settings::values.init_time_offset.GetValue() - offset) > 2;
+            std::abs(Settings::values.init_time_offset.GetValue() - offset) > 2 ||
+            (offset_changes && system.IsPoweredOn());
         if (clock_changes) {
             Settings::values.init_clock = Settings::InitClock::SystemTime;
             Settings::values.init_time_offset = offset;

@@ -1046,6 +1046,12 @@ void Module::SaveMCUConfig() {
     }
 }
 
+static std::optional<u64> link_user_time_offset;
+
+void SetLinkUserTimeOffset(std::optional<u64> offset) {
+    link_user_time_offset = offset;
+}
+
 Module::Module(Core::System& system_) : system(system_) {
     load_savegame_res = LoadConfigNANDSaveFile();
     LoadMCUConfig();
@@ -1059,6 +1065,14 @@ Module::Module(Core::System& system_) : system(system_) {
                  default_version.minor);
         SetEULAVersion(default_version);
         UpdateConfigNANDSavegame();
+    }
+    if (link_user_time_offset) {
+        // only in memory: Azahar's own config file keeps its value
+        const u64 offset = *link_user_time_offset;
+        if (SetConfigBlock(UserTimeOffsetBlockID, sizeof(offset), AccessFlag::SystemWrite, &offset)
+                .IsSuccess()) {
+            LOG_INFO(Service_CFG, "3DS-Link: user time offset {:#x}", offset);
+        }
     }
 }
 

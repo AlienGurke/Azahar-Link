@@ -12,6 +12,7 @@
 #include <QStringList>
 #include "common/common_types.h"
 #include <atomic>
+#include <optional>
 
 class QAction;
 class QLabel;
@@ -54,6 +55,7 @@ private:
     bool option_clock = true;
     /// how a game's save is handled when it starts: 0 ask, 1 always from the 3DS, 2 never
     static int save_mode;
+    static std::optional<u64> link_user_offset; // of the 3DS, for the next boot
     static LinkUi* instance;
     static bool write_back;     // write the save back when the game stops (off by default)
     static bool write_ask;      // ask before that

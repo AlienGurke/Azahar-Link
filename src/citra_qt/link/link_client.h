@@ -82,6 +82,12 @@ public:
         return true;
     }
 
+    /// The user time offset of the 3DS (config block 0x30001); false with an older app.
+    bool UserTimeOffset(uint64_t& offset) const {
+        offset = clock_user_offset.load();
+        return clock_has_user_offset.load();
+    }
+
     // --- 3DS file system archives (saves, extdata, system data) ---
     // Blocking: call them from a worker thread, never from the UI. They return false if the
     // connection failed; `status` then holds nothing useful, otherwise a LinkStatus.
@@ -165,6 +171,8 @@ private:
 
     std::atomic<bool> clock_new{false};
     std::atomic<int64_t> clock_delta{0};
+    std::atomic<uint64_t> clock_user_offset{0};
+    std::atomic<bool> clock_has_user_offset{false};
     void ReadConsoleClock();
 
     std::atomic<uint32_t> last_arc_result{0};

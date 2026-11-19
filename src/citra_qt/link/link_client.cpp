@@ -532,9 +532,18 @@ void Client::ReadConsoleClock() {
     const int64_t pc = std::chrono::duration_cast<std::chrono::seconds>(
                            std::chrono::system_clock::now().time_since_epoch())
                            .count();
+    uint64_t user_offset = 0;
+    const bool has_user_offset = out.size() >= 16;
+    if (has_user_offset) {
+        std::memcpy(&user_offset, out.data() + 8, 8);
+    }
+    clock_user_offset = user_offset;
+    clock_has_user_offset = has_user_offset;
     clock_delta = console - pc;
     clock_new = true;
-    Log("clock: 3DS minus PC (UTC) = " + std::to_string(console - pc) + " s");
+    Log("clock: 3DS minus PC (UTC) = " + std::to_string(console - pc) + " s" +
+        (has_user_offset ? ", user time offset " + std::to_string(static_cast<int64_t>(user_offset))
+                         : std::string(", user time offset unknown (old app)")));
 }
 
 // The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place

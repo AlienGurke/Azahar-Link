@@ -703,8 +703,10 @@ int CopySystemDataFrom3DS(std::string& message) {
             Log("system data: connection gone");
             return copied; // connection gone
         }
-        Log(fmt::format("system data: {:016X}: {} (3DS code 0x{:08X}, {} entries)", id, status,
-                        client.LastArcResult(), entries.size()));
+        if (client.LastArcResult() != 0xC8804478) { // not on this 3DS: nothing to say
+            Log(fmt::format("system data: {:016X}: {} (3DS code 0x{:08X}, {} entries)", id,
+                            status, client.LastArcResult(), entries.size()));
+        }
         if (status == LINK_ERR_BADCMD) {
             message = Text("sys_old_app");
             return copied;
