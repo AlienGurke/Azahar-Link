@@ -27,6 +27,7 @@
 #include "citra_qt/link/link_ui.h"
 #include <ctime>
 #include <QDateTime>
+#include <fmt/format.h>
 #include "common/file_util.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -41,6 +42,7 @@ QString Q(const char* key) {
 } // namespace
 
 LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
+    instance = this;
     const std::string path =
         FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) + "3ds-link.ini";
     settings = new QSettings(QString::fromStdString(path), QSettings::IniFormat, this);
@@ -57,6 +59,35 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     disconnect_action = menu->addAction(Q("disconnect"));
     QAction* mii_action = menu->addAction(Q("miisync"));
     connect(mii_action, &QAction::triggered, this, [] { Get().RequestMiiSync(); });
+    QAction* repair_action = menu->addAction(Q("repair"));
+    connect(repair_action, &QAction::triggered, this, [this] {
+        const u64 tid = settings->value(QStringLiteral("last_title"), 0).toULongLong();
+        if (tid == 0) {
+            QMessageBox::information(window, Q("write_title"), Q("repair_none"));
+            return;
+        }
+        const QString name = QStringLiteral("%1").arg(tid, 16, 16, QLatin1Char('0')).toUpper();
+        if (QMessageBox::question(window, Q("write_title"),
+                                  Q("repair_ask").replace(QStringLiteral("%1"), name)) !=
+            QMessageBox::Yes) {
+            return;
+        }
+        const LinkArchiveReq ar = {LINK_ARCHIVE_USER_SAVEDATA, LINK_MEDIA_SD,
+                                   static_cast<uint32_t>(tid & 0xFFFFFFFF),
+                                   static_cast<uint32_t>(tid >> 32), 0, 0};
+        uint16_t status = 0;
+        const bool sent = Get().ArcSimple(LINK_CMD_SECUREDEL, ar, "", status);
+        Log(fmt::format("repair: secure value of {:016X}: {} (3DS code 0x{:08X})", tid,
+                        sent ? status : 999, Get().LastArcResult()));
+        if (sent && status == LINK_OK) {
+            QMessageBox::information(window, Q("write_title"), Q("repair_done"));
+        } else {
+            QMessageBox::warning(window, Q("write_title"),
+                                 Q("repair_failed")
+                                     .replace(QStringLiteral("%1"),
+                                              QString::number(sent ? status : 999)));
+        }
+    });
     QAction* backups_action = menu->addAction(Q("backups_open"));
     connect(backups_action, &QAction::triggered, this, [] {
         const QString dir = QString::fromStdString(BackupRoot());
@@ -139,6 +170,7 @@ LinkUi::~LinkUi() {
 }
 
 int LinkUi::save_mode = 0;
+LinkUi* LinkUi::instance = nullptr;
 bool LinkUi::write_back = false;
 bool LinkUi::write_ask = true;
 u64 LinkUi::loaded_program_id = 0;
@@ -266,6 +298,10 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
     case SaveImportResult::Outcome::Imported:
         loaded_program_id = program_id; // its save may go back to the 3DS when it stops
         loaded_extdata_id = extdata_id;
+        if (instance) {
+            instance->settings->setValue(QStringLiteral("last_title"),
+                                         static_cast<qulonglong>(program_id));
+        }
         if (auto* main = qobject_cast<QMainWindow*>(parent)) {
             main->statusBar()->showMessage(message, 10000);
         }

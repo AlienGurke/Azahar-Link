@@ -293,6 +293,20 @@ std::string Text(const char* key) {
                         "Spielstand auf den 3DS zurückgeschrieben (geprüft)"}},
         {"write_failed", {"The save could not be written to the 3DS:\n%1",
                           "Der Spielstand konnte nicht auf den 3DS geschrieben werden:\n%1"}},
+        {"repair", {"Repair the save on the 3DS (\"save damaged\")...",
+                    "Spielstand auf dem 3DS reparieren („Speicherdaten defekt“)..."}},
+        {"repair_ask", {"Delete the secure value of the save of %1 on the 3DS?\n\nUse this when "
+                        "the game on the 3DS calls a save written back from Azahar damaged. The "
+                        "save itself is not changed.",
+                        "Den Prüfwert (Secure Value) des Spielstands von %1 auf dem 3DS "
+                        "löschen?\n\nDas hilft, wenn das Spiel auf dem 3DS einen von Azahar "
+                        "zurückgeschriebenen Spielstand als defekt meldet. Der Spielstand selbst "
+                        "wird nicht verändert."}},
+        {"repair_none", {"No game yet: load a save from the 3DS first.",
+                         "Noch kein Spiel: zuerst einen Spielstand vom 3DS laden."}},
+        {"repair_done", {"Done - start the game on the 3DS", "Erledigt - jetzt das Spiel auf dem 3DS starten"}},
+        {"repair_failed", {"Did not work (%1). Is the 3DS connected and the app up to date?",
+                           "Hat nicht geklappt (%1). Ist der 3DS verbunden und die App aktuell?"}},
         {"backups_open", {"Open the save backups folder", "Ordner mit den Spielstand-Sicherungen öffnen"}},
         {"miisync", {"Take the Miis from the 3DS now", "Miis jetzt vom 3DS übernehmen"}},
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
