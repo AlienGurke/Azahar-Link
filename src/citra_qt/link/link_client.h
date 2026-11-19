@@ -62,6 +62,10 @@ public:
     /// Name of the running game (empty = none), shown in the 3DS app.
     void SetGameName(const std::string& name);
 
+    /// Settings (3DS Link > Settings): what happens on every connect.
+    std::atomic<bool> option_miis{true};       // take the Miis of the 3DS
+    std::atomic<bool> option_system_data{true}; // take missing system data from the 3DS
+
     /// Copies the Mii database (Mii Maker) of the 3DS into Azahar now. It also happens
     /// on every connect; Azahar's own database is kept once as CFL_DB.dat.before-3ds-link.
     void RequestMiiSync() {

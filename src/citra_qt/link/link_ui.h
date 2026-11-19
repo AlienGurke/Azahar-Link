@@ -10,6 +10,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include <atomic>
 
 class QAction;
 class QLabel;
@@ -45,6 +46,9 @@ private:
     QLabel* status_label;
     QTimer* timer;
     bool game_running = false;
+    bool option_clock = true;
+    /// how a game's save is handled when it starts: 0 ask, 1 always from the 3DS, 2 never
+    static int save_mode;
     // messages are shown one after the other, each for a few seconds
     QStringList queued;
     qint64 shown_until = 0;

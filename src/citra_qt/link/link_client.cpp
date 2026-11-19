@@ -254,8 +254,17 @@ std::string Text(const char* key) {
                         "Die 3DS-Link-App darf die Systemdaten nicht lesen"}},
         {"sys_old_app", {"For the system data, please update the 3DS Link app on the 3DS",
                          "Für die Systemdaten bitte die 3DS-Link-App auf dem 3DS aktualisieren"}},
+        {"settings", {"Settings", "Einstellungen"}},
+        {"opt_clock", {"Use the clock of the 3DS", "Uhrzeit vom 3DS übernehmen"}},
+        {"opt_miis", {"Take the Miis of the 3DS", "Miis vom 3DS übernehmen"}},
+        {"opt_sys", {"Take missing system data from the 3DS (Mii graphics, fonts)",
+                     "Fehlende Systemdaten vom 3DS übernehmen (Mii-Grafik, Schriften)"}},
+        {"opt_save", {"Save when a game starts", "Spielstand beim Spielstart"}},
+        {"opt_save_ask", {"Ask", "Fragen"}},
+        {"opt_save_always", {"Always load from the 3DS", "Immer vom 3DS laden"}},
+        {"opt_save_never", {"Never (use the PC save)", "Nie (Spielstand vom PC nutzen)"}},
         {"backups_open", {"Open the save backups folder", "Ordner mit den Spielstand-Sicherungen öffnen"}},
-        {"miisync", {"Take the Miis from the 3DS", "Miis vom 3DS übernehmen"}},
+        {"miisync", {"Take the Miis from the 3DS now", "Miis jetzt vom 3DS übernehmen"}},
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
         {"mii_same", {"The Miis are already the same as on the 3DS",
                       "Die Miis sind schon dieselben wie auf dem 3DS"}},
@@ -930,8 +939,10 @@ void Client::Worker(std::string host) {
         session_dirty = true;
         mii_sync_wanted = false;
         ReadConsoleClock();
-        SyncMiis(false);
-        {
+        if (option_miis) {
+            SyncMiis(false);
+        }
+        if (option_system_data) {
             // system data Azahar lacks (Mii graphics, fonts...): once, quietly if all is there
             std::string sys_message;
             CopySystemDataFrom3DS(sys_message);

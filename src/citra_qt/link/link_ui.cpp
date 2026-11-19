@@ -4,6 +4,7 @@
 
 #include <thread>
 #include <QAction>
+#include <QActionGroup>
 #include <QDesktopServices>
 #include <QDir>
 #include <QEventLoop>
@@ -66,6 +67,38 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     auto_action = menu->addAction(Q("autoconnect"));
     auto_action->setCheckable(true);
     auto_action->setChecked(settings->value(QStringLiteral("autoconnect"), false).toBool());
+
+    // settings: what happens on connect and when a game starts (all on by default)
+    QMenu* options = menu->addMenu(Q("settings"));
+    const auto add_option = [&](const char* key, const char* name, auto apply) {
+        QAction* a = options->addAction(Q(key));
+        a->setCheckable(true);
+        const bool on = settings->value(QString::fromLatin1(name), true).toBool();
+        a->setChecked(on);
+        apply(on);
+        connect(a, &QAction::toggled, this, [this, name, apply](bool value) {
+            settings->setValue(QString::fromLatin1(name), value);
+            apply(value);
+        });
+    };
+    add_option("opt_clock", "clock", [this](bool on) { option_clock = on; });
+    add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
+    add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
+    QMenu* save_menu = options->addMenu(Q("opt_save"));
+    QActionGroup* save_group = new QActionGroup(save_menu);
+    save_mode = settings->value(QStringLiteral("save_mode"), 0).toInt();
+    int mode = 0;
+    for (const char* key : {"opt_save_ask", "opt_save_always", "opt_save_never"}) {
+        QAction* a = save_menu->addAction(Q(key));
+        a->setCheckable(true);
+        a->setChecked(mode == save_mode);
+        save_group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, mode] {
+            save_mode = mode;
+            settings->setValue(QStringLiteral("save_mode"), mode);
+        });
+        mode++;
+    }
     disconnect_action->setEnabled(false);
 
     connect(connect_action, &QAction::triggered, this, &LinkUi::OnConnect);
@@ -92,8 +125,10 @@ LinkUi::~LinkUi() {
     Get().Disconnect();
 }
 
+int LinkUi::save_mode = 0;
+
 bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
-    if (Get().GetState() != State::Connected) {
+    if (Get().GetState() != State::Connected || save_mode == 2) {
         return true;
     }
     u64 program_id = 0;
@@ -107,18 +142,20 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
         extdata_id = 0;
     }
 
-    QMessageBox ask(QMessageBox::Question, Q("save_ask_title"), Q("save_ask"),
-                    QMessageBox::NoButton, parent);
-    QPushButton* load = ask.addButton(Q("save_ask_load"), QMessageBox::AcceptRole);
-    QPushButton* pc = ask.addButton(Q("save_ask_pc"), QMessageBox::RejectRole);
-    ask.addButton(QMessageBox::Cancel);
-    ask.setDefaultButton(load);
-    ask.exec();
-    if (ask.clickedButton() == pc) {
-        return true;
-    }
-    if (ask.clickedButton() != load) {
-        return false; // cancelled: no start
+    if (save_mode == 0) {
+        QMessageBox ask(QMessageBox::Question, Q("save_ask_title"), Q("save_ask"),
+                        QMessageBox::NoButton, parent);
+        QPushButton* load = ask.addButton(Q("save_ask_load"), QMessageBox::AcceptRole);
+        QPushButton* pc = ask.addButton(Q("save_ask_pc"), QMessageBox::RejectRole);
+        ask.addButton(QMessageBox::Cancel);
+        ask.setDefaultButton(load);
+        ask.exec();
+        if (ask.clickedButton() == pc) {
+            return true;
+        }
+        if (ask.clickedButton() != load) {
+            return false; // cancelled: no start
+        }
     }
 
     QProgressDialog progress(Q("save_reading"), QString(), 0, 0, parent);
@@ -212,7 +249,7 @@ void LinkUi::Poll() {
 
     // the 3DS clock: Azahar's clock offset is set so its games see the same time
     int64_t delta = 0;
-    if (client.TakeConsoleClock(delta)) {
+    if (client.TakeConsoleClock(delta) && option_clock) {
         // Azahar's console clock (kernel/shared_page.cpp) is the UTC time + 1 h in daylight
         // saving time + the offset, counted from 1 Jan 2000 in local time (std::mktime) -
         // which adds the time zone. The same sums here, so the offset makes it the 3DS clock.
