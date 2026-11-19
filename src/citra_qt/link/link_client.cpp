@@ -226,6 +226,8 @@ std::string Text(const char* key) {
         {"save_done", {"Save loaded from the 3DS (%1 KB)", "Spielstand vom 3DS geladen (%1 KB)"}},
         {"save_done_ext", {"Save and extra data loaded from the 3DS (%1 KB)",
                            "Spielstand und Extradaten vom 3DS geladen (%1 KB)"}},
+        {"save_same", {"The save in Azahar is already the one on the 3DS",
+                       "Der Spielstand in Azahar ist schon der vom 3DS"}},
         {"save_none", {"The 3DS has no save for this game (title ID %1). Starting with the PC "
                        "save.",
                        "Auf dem 3DS gibt es keinen Spielstand für dieses Spiel (Title-ID %1). Es "

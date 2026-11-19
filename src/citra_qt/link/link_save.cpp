@@ -159,6 +159,36 @@ int ReadTree(Client& client, const LinkArchiveReq& archive, Tree& tree, std::str
     return 1;
 }
 
+// the folder holds exactly the files (and folders) of the tree, with the same contents
+bool SameAsFolder(const Tree& tree, const fs::path& root) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) {
+        return false;
+    }
+    size_t files = 0, dirs = 0;
+    for (auto it = fs::recursive_directory_iterator(root, ec); !ec && it != fs::end(it);
+         it.increment(ec)) {
+        const std::string rel = "/" + FromPath(fs::relative(it->path(), root, ec).generic_u8string());
+        if (it->is_directory(ec)) {
+            if (std::find(tree.dirs.begin(), tree.dirs.end(), rel) == tree.dirs.end()) {
+                return false;
+            }
+            dirs++;
+            continue;
+        }
+        const auto f = tree.files.find(rel);
+        if (f == tree.files.end() || fs::file_size(it->path(), ec) != f->second.size()) {
+            return false;
+        }
+        std::vector<uint8_t> data;
+        if (!ReadFile(it->path(), data) || data != f->second) {
+            return false;
+        }
+        files++;
+    }
+    return !ec && files == tree.files.size() && dirs == tree.dirs.size();
+}
+
 bool WriteFile(const fs::path& path, const void* data, size_t size) {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
@@ -541,6 +571,16 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     save_meta += U8(".metadata");
     const fs::path ext_dir =
         U8(fmt::format("{}Nintendo 3DS/{}/{}/extdata/00000000/{:08x}", sdmc, kId, kId, ext_id));
+
+    // Azahar has exactly this already (the usual case when nothing was played on the 3DS
+    // and nothing on the PC): nothing to back up, nothing to write
+    if (SameAsFolder(save, save_dir) && fs::exists(save_meta) &&
+        (ext_found == 0 || (SameAsFolder(ext, ext_dir / "user") && fs::exists(ext_dir / "metadata")))) {
+        result.outcome = SaveImportResult::Outcome::Imported;
+        result.message = Text("save_same");
+        Log(fmt::format("save: Azahar has the same save already, {:.1f} s", seconds()));
+        return result;
+    }
 
     const fs::path title_backups = U8(BackupRoot() + tid);
     const fs::path backup = title_backups / U8(NowName());
