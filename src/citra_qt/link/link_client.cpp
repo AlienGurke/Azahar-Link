@@ -30,6 +30,7 @@ typedef int sock_t;
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <cstring>
 #include <map>
 
@@ -153,6 +154,26 @@ std::string Format(std::string text, const std::string& a, const std::string& b)
     put("%1", a);
     put("%2", b);
     return text;
+}
+
+void Log(const std::string& line) {
+    static std::mutex log_mutex;
+    std::scoped_lock lock{log_mutex};
+    const std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/";
+    FileUtil::CreateFullPath(dir);
+    const std::string path = dir + "link-log.txt";
+    std::string old;
+    if (FileUtil::Exists(path)) {
+        FileUtil::ReadFileToString(true, path, old);
+        if (old.size() > 512 * 1024) {
+            old.erase(0, old.size() - 256 * 1024); // keep the end
+        }
+    }
+    const std::time_t t = std::time(nullptr);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+    old += std::string(stamp) + "  " + line + "\n";
+    FileUtil::WriteStringToFile(true, path, old);
 }
 
 std::string Text(const char* key) {
@@ -458,6 +479,7 @@ void Client::ReadConsoleClock() {
                            .count();
     clock_delta = console - pc;
     clock_new = true;
+    Log("clock: 3DS minus PC (UTC) = " + std::to_string(console - pc) + " s");
 }
 
 // The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place
@@ -495,12 +517,13 @@ bool Client::Titles(std::vector<uint64_t>& sd, std::vector<uint64_t>& card, uint
 }
 
 bool Client::ArcList(const LinkArchiveReq& archive, const std::string& dir,
-                     std::vector<DirEntry>& entries, uint16_t& status) {
+                     std::vector<DirEntry>& entries, uint16_t& status, bool with_hash) {
     std::vector<uint8_t> req(sizeof(archive));
     std::memcpy(req.data(), &archive, sizeof(archive));
     req.insert(req.end(), dir.begin(), dir.end());
     std::vector<uint8_t> out;
-    if (!Request(LINK_CMD_ARCLIST, req.data(), static_cast<uint32_t>(req.size()), status, &out)) {
+    if (!Request(with_hash ? LINK_CMD_ARCLISTHASH : LINK_CMD_ARCLIST, req.data(),
+                 static_cast<uint32_t>(req.size()), status, &out)) {
         return false;
     }
     NoteArcResult(status, out);
@@ -518,6 +541,13 @@ bool Client::ArcList(const LinkArchiveReq& archive, const std::string& dir,
         e.is_dir = de.isDir != 0;
         e.size = de.size;
         pos += de.nameLen;
+        if (with_hash) {
+            if (pos + 8 > out.size()) {
+                break;
+            }
+            std::memcpy(&e.hash, out.data() + pos, 8);
+            pos += 8;
+        }
         entries.push_back(std::move(e));
     }
     return true;
@@ -666,6 +696,8 @@ void Client::SyncMiis(bool report_unchanged) {
     if (!ArcRead(ar, "/CFL_DB.dat", data, status)) {
         return; // connection gone; the next connect tries again
     }
+    Log("miis: status " + std::to_string(status) + ", " + std::to_string(data.size()) +
+        " bytes");
     if (status == LINK_ERR_BADCMD) {
         PushMessage(Text("mii_old_app"));
         return;
@@ -797,6 +829,7 @@ void Client::Worker(std::string host) {
 
         state = State::Connected;
         UpdateCapture();
+        Log("connected to " + host);
         const std::string name(hello.name, strnlen(hello.name, sizeof(hello.name)));
         PushMessage(Format(Text("connected"), name, host));
         ever_connected = true;

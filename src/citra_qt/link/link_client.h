@@ -85,9 +85,12 @@ public:
         std::string name;
         bool is_dir = false;
         uint64_t size = 0;
+        uint64_t hash = 0; // with_hash: FNV-1a 64 of the file
     };
+    /// with_hash: also the hash of every file (the 3DS reads them for it); an older app
+    /// answers BADCMD then.
     bool ArcList(const LinkArchiveReq& archive, const std::string& dir,
-                 std::vector<DirEntry>& entries, uint16_t& status);
+                 std::vector<DirEntry>& entries, uint16_t& status, bool with_hash = false);
     bool ArcRead(const LinkArchiveReq& archive, const std::string& path,
                  std::vector<uint8_t>& data, uint16_t& status);
     bool ArcInfo(const LinkArchiveReq& archive, LinkFormatInfo& info, uint16_t& status);
@@ -192,6 +195,9 @@ private:
 };
 
 Client& Get();
+
+/// A line in <user>/3ds-link/link-log.txt (what the link did, for finding problems).
+void Log(const std::string& line);
 
 /// A text in the language of Azahar's interface (German or English).
 std::string Text(const char* key);

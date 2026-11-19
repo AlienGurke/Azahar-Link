@@ -46,6 +46,7 @@ struct Tree {
     bool have_info = false;
     LinkFormatInfo info{};
     uint64_t bytes = 0;
+    int from_cache = 0; // files taken from the copy of last time
 };
 
 uint64_t Fnv64(const std::vector<uint8_t>& data) {
@@ -84,9 +85,18 @@ int ReadTree(Client& client, const LinkArchiveReq& archive, Tree& tree, std::str
         todo.pop_back();
         std::vector<Client::DirEntry> entries;
         uint16_t status = 0;
-        if (!client.ArcList(archive, dir, entries, status)) {
+        // with a cache: the 3DS hashes the whole folder in one go, so only what changed
+        // has to come over the WiFi
+        if (!client.ArcList(archive, dir, entries, status, use_cache)) {
             error = Text("save_conn_lost");
             return -1;
+        }
+        if (use_cache && status == LINK_ERR_BADCMD) {
+            use_cache = false; // older app: read everything
+            if (!client.ArcList(archive, dir, entries, status)) {
+                error = Text("save_conn_lost");
+                return -1;
+            }
         }
         if (first && (status == LINK_ERR_DENIED || status == LINK_ERR_NOTFOUND)) {
             return 0;
@@ -117,19 +127,11 @@ int ReadTree(Client& client, const LinkArchiveReq& archive, Tree& tree, std::str
             bool from_cache = false;
             if (use_cache) {
                 std::vector<uint8_t> cached;
-                if (ReadFile(cache / U8(path.substr(1)), cached)) {
-                    uint64_t size = 0, hash = 0;
-                    if (!client.ArcHash(archive, path, size, hash, status)) {
-                        error = Text("save_conn_lost");
-                        return -1;
-                    }
-                    if (status == LINK_ERR_BADCMD) {
-                        use_cache = false; // older app: read everything
-                    } else if (status == LINK_OK && size == cached.size() &&
-                               hash == Fnv64(cached)) {
-                        data = std::move(cached);
-                        from_cache = true;
-                    }
+                if (ReadFile(cache / U8(path.substr(1)), cached) && e.size == cached.size() &&
+                    e.hash == Fnv64(cached)) {
+                    data = std::move(cached);
+                    from_cache = true;
+                    tree.from_cache++;
                 }
             }
             // the size comes from the file itself (directory listings of extdata can show
@@ -305,8 +307,11 @@ int CopySystemDataFrom3DS(std::string& message) {
         std::vector<Client::DirEntry> entries;
         uint16_t status = 0;
         if (!client.ArcList(ctrnand, dir, entries, status)) {
+            Log("system data: connection gone");
             return copied; // connection gone
         }
+        Log(fmt::format("system data: {:016X}: {} (3DS code 0x{:08X}, {} entries)", id, status,
+                        client.LastArcResult(), entries.size()));
         if (status == LINK_ERR_BADCMD) {
             message = Text("sys_old_app");
             return copied;
@@ -348,6 +353,7 @@ int CopySystemDataFrom3DS(std::string& message) {
             return copied;
         }
         copied++;
+        Log(fmt::format("system data: {:016X} copied ({} files)", id, tree.files.size()));
     }
     if (copied > 0 && message.empty()) {
         message = Format(Text("sys_done"), std::to_string(copied));
@@ -366,6 +372,17 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     const u32 high = static_cast<u32>(program_id >> 32);
     const u32 low = static_cast<u32>(program_id & 0xFFFFFFFF);
     const std::string tid = fmt::format("{:016X}", program_id);
+    const auto started = std::chrono::steady_clock::now();
+    const auto seconds = [&] {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    };
+    Log(fmt::format("save: loading {} from the 3DS (extdata id {:X})", tid, extdata_id));
+    struct LogResult {
+        SaveImportResult& r;
+        ~LogResult() {
+            Log(fmt::format("save: result {} - {}", static_cast<int>(r.outcome), r.message));
+        }
+    } log_result{result};
 
     // --- 1. read everything from the 3DS (nothing is written there) ---
     const fs::path cache = U8(FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
@@ -426,6 +443,11 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
         result.message = error;
         return result;
     }
+
+    Log(fmt::format("save: read {} files ({} unchanged, from the cache), extdata {} files ({} "
+                    "unchanged), {} KB, {:.1f} s",
+                    save.files.size(), save.from_cache, ext.files.size(), ext.from_cache,
+                    (save.bytes + ext.bytes) / 1024, seconds()));
 
     // --- 2. backups: the copy from the 3DS and Azahar's save as it is now ---
     progress(Text("save_backup"));
@@ -534,6 +556,7 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     }
 
     PruneBackups(title_backups);
+    Log(fmt::format("save: done after {:.1f} s, backup {}", seconds(), result.backup_dir));
     result.outcome = SaveImportResult::Outcome::Imported;
     const size_t kb = static_cast<size_t>((save.bytes + ext.bytes + 1023) / 1024);
     result.message = Format(Text(ext_found > 0 ? "save_done_ext" : "save_done"),
