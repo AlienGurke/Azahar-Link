@@ -317,6 +317,8 @@ target_link_libraries(citra_qt PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
 if (WIN32)
     target_link_libraries(citra_qt PRIVATE ws2_32)
 endif()
+# 3DS Link: LZ4 is C, the precompiled headers are C++
+set_source_files_properties(link/lz4/lz4.c PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 if (MINGW)
     target_link_libraries(citra_qt PRIVATE dwmapi)
