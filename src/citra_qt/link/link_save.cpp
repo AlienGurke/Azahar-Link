@@ -250,6 +250,52 @@ void PruneBackups(const fs::path& title_dir) {
     }
 }
 
+// NCCH header fields (3dbrew: NCCH)
+constexpr size_t kNcchContentSize = 0x104;
+constexpr size_t kNcchCryptoMethod = 0x18B;
+constexpr size_t kNcchFlags7 = 0x18F; // bit 0 fixed key, bit 2 no crypto
+constexpr size_t kNcchExefsOffset = 0x1A0;
+constexpr size_t kNcchExefsSize = 0x1A4;
+constexpr size_t kNcchExefsHashSize = 0x1A8;
+constexpr size_t kNcchRomfsOffset = 0x1B0;
+constexpr size_t kNcchRomfsSize = 0x1B4;
+constexpr size_t kNcchRomfsHashSize = 0x1B8;
+
+bool IsPlainNcch(const std::vector<uint8_t>& head) {
+    return head.size() >= 0x200 && std::memcmp(head.data() + 0x100, "NCCH", 4) == 0 &&
+           (head[kNcchFlags7] & 0x04) != 0;
+}
+
+void Put32(std::vector<uint8_t>& v, size_t at, uint32_t x) {
+    std::memcpy(v.data() + at, &x, 4);
+}
+
+// An unencrypted NCCH with only a RomFS: the header of the original (ids, version...),
+// 0x1000 bytes where the IVFC tree was (Azahar skips them), then the RomFS (level 3)
+std::vector<uint8_t> BuildPlainNcch(const std::vector<uint8_t>& original_header,
+                                    const std::vector<uint8_t>& romfs) {
+    constexpr uint32_t unit = 0x200;
+    // the whole RomFS image (IVFC tree in front) goes in as it is; just level 3 (the file
+    // system itself, header size 0x28 first) gets 0x1000 bytes in front of it
+    const bool whole_image = romfs.size() >= 4 && std::memcmp(romfs.data(), "IVFC", 4) == 0;
+    const uint32_t lead = whole_image ? 0 : 0x1000;
+    const uint32_t romfs_bytes =
+        static_cast<uint32_t>((lead + romfs.size() + unit - 1) / unit * unit);
+    std::vector<uint8_t> out(unit + romfs_bytes, 0);
+    std::memcpy(out.data(), original_header.data(), unit);
+    out[kNcchCryptoMethod] = 0;
+    out[kNcchFlags7] = static_cast<uint8_t>((out[kNcchFlags7] & ~0x01) | 0x04);
+    Put32(out, kNcchExefsOffset, 0);
+    Put32(out, kNcchExefsSize, 0);
+    Put32(out, kNcchExefsHashSize, 0);
+    Put32(out, kNcchRomfsOffset, 1);
+    Put32(out, kNcchRomfsSize, romfs_bytes / unit);
+    Put32(out, kNcchRomfsHashSize, 0);
+    Put32(out, kNcchContentSize, static_cast<uint32_t>(out.size() / unit));
+    std::memcpy(out.data() + unit + lead, romfs.data(), romfs.size());
+    return out;
+}
+
 std::string NowName() {
     const std::time_t t = std::time(nullptr);
     std::tm tm{};
@@ -290,16 +336,23 @@ int CopySystemDataFrom3DS(std::string& message) {
         const u32 low = static_cast<u32>(id & 0xFFFFFFFF);
         const fs::path content =
             U8(fmt::format("{}{}/title/{:08x}/{:08x}/content", nand, kId, high, low));
-        // already there (a .tmd is what Azahar looks for)?
+        // already there? A .tmd is what Azahar looks for, and its contents must be
+        // unencrypted (Azahar reads no encrypted NCCH; copies of an earlier version were)
         std::error_code ec;
-        bool present = false;
+        bool has_tmd = false, usable = true;
         for (const auto& e : fs::directory_iterator(content, ec)) {
             if (e.path().extension() == ".tmd") {
-                present = true;
-                break;
+                has_tmd = true;
+            } else if (e.path().extension() == ".app") {
+                std::vector<uint8_t> head(0x200);
+                std::ifstream f(e.path(), std::ios::binary);
+                f.read(reinterpret_cast<char*>(head.data()), 0x200);
+                if (!f || !IsPlainNcch(head)) {
+                    usable = false;
+                }
             }
         }
-        if (present) {
+        if (has_tmd && usable) {
             continue;
         }
 
@@ -324,24 +377,53 @@ int CopySystemDataFrom3DS(std::string& message) {
             continue; // not on this 3DS (another region)
         }
 
-        // the title's .tmd and contents, written next to the folder and then moved in
+        // the title's .tmd as it is; its content (encrypted on the NAND) is rebuilt
+        // unencrypted from the RomFS the 3DS reads for us
         Tree tree;
+        bool content_done = false;
         for (const auto& e : entries) {
             if (e.is_dir) {
                 continue;
             }
+            const std::string file = dir + "/" + e.name;
             std::vector<uint8_t> data;
-            if (!client.ArcRead(ctrnand, dir + "/" + e.name, data, status)) {
+            const bool is_app = e.name.size() > 4 && e.name.substr(e.name.size() - 4) == ".app";
+            if (is_app && content_done) {
+                continue; // data archives have one content; only that one can be rebuilt
+            }
+            if (!(is_app ? client.ArcReadPart(ctrnand, file, 0, 0x200, data, status)
+                         : client.ArcRead(ctrnand, file, data, status))) {
                 return copied;
             }
-            if (status != LINK_OK || data.size() != e.size) {
-                message = fmt::format("{} ({}/{}: {})", Text("save_read_failed"), dir, e.name,
-                                      status);
+            if (status != LINK_OK) {
+                message = fmt::format("{} ({}: {})", Text("save_read_failed"), file, status);
                 return copied;
+            }
+            if (is_app) {
+                std::vector<uint8_t> romfs;
+                if (!client.ReadSystemRomfs(id, romfs, status)) {
+                    return copied;
+                }
+                Log(fmt::format("system data: {:016X} RomFS: {} ({} bytes, starts {:02X}{:02X}{:02X}"
+                                "{:02X}, 3DS code 0x{:08X})",
+                                id, status, romfs.size(), romfs.size() > 3 ? romfs[0] : 0,
+                                romfs.size() > 3 ? romfs[1] : 0, romfs.size() > 3 ? romfs[2] : 0,
+                                romfs.size() > 3 ? romfs[3] : 0, client.LastArcResult()));
+                if (status == LINK_ERR_BADCMD) {
+                    message = Text("sys_old_app");
+                    return copied;
+                }
+                if (status != LINK_OK || data.size() < 0x200 || romfs.size() < 0x28) {
+                    message = fmt::format("{} ({:016X} RomFS: {})", Text("save_read_failed"), id,
+                                          status);
+                    return copied;
+                }
+                data = BuildPlainNcch(data, romfs);
+                content_done = true;
             }
             tree.files["/" + e.name] = std::move(data);
         }
-        if (tree.files.empty()) {
+        if (tree.files.empty() || !content_done) {
             continue;
         }
         fs::path fresh = content;

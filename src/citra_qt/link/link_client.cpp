@@ -553,6 +553,92 @@ bool Client::ArcList(const LinkArchiveReq& archive, const std::string& dir,
     return true;
 }
 
+namespace {
+// one LinkArcChunk answer into `data` (appended); false = broken answer
+bool TakeChunk(const std::vector<uint8_t>& part, std::vector<uint8_t>& data, uint32_t& total) {
+    LinkArcChunk c;
+    if (part.size() < sizeof(c)) {
+        return false;
+    }
+    std::memcpy(&c, part.data(), sizeof(c));
+    if (c.totalSize > 64 * 1024 * 1024 || c.rawLen > LINK_ARCZ_MAX_CHUNK) {
+        return false;
+    }
+    total = c.totalSize;
+    const size_t at = data.size();
+    data.resize(at + c.rawLen);
+    const char* src = reinterpret_cast<const char*>(part.data() + sizeof(c));
+    const int src_len = static_cast<int>(part.size() - sizeof(c));
+    if (c.mode == LINK_BLOCK_LZ4) {
+        return LZ4_decompress_safe(src, reinterpret_cast<char*>(data.data() + at), src_len,
+                                   static_cast<int>(c.rawLen)) == static_cast<int>(c.rawLen);
+    }
+    if (c.mode != LINK_BLOCK_RAW || static_cast<uint32_t>(src_len) != c.rawLen) {
+        return false;
+    }
+    if (c.rawLen) {
+        std::memcpy(data.data() + at, src, c.rawLen);
+    }
+    return true;
+}
+} // namespace
+
+bool Client::ArcReadPart(const LinkArchiveReq& archive, const std::string& path, uint32_t offset,
+                         uint32_t length, std::vector<uint8_t>& data, uint16_t& status) {
+    LinkArchiveReq ar = archive;
+    ar.offset = offset;
+    ar.length = length;
+    std::vector<uint8_t> req(sizeof(ar));
+    std::memcpy(req.data(), &ar, sizeof(ar));
+    req.insert(req.end(), path.begin(), path.end());
+    std::vector<uint8_t> part;
+    if (!Request(LINK_CMD_ARCREADZ, req.data(), static_cast<uint32_t>(req.size()), status,
+                 &part)) {
+        return false;
+    }
+    data.clear();
+    uint32_t total = 0;
+    if (status == LINK_OK && !TakeChunk(part, data, total)) {
+        status = LINK_ERR_IO;
+    }
+    if (status != LINK_OK) {
+        NoteArcResult(status, part);
+    }
+    return true;
+}
+
+bool Client::ReadSystemRomfs(uint64_t title_id, std::vector<uint8_t>& data, uint16_t& status) {
+    data.clear();
+    uint32_t total = 0;
+    do {
+        LinkRomfsReq r{};
+        r.titleId = title_id;
+        r.mediaType = LINK_MEDIA_NAND;
+        r.offset = static_cast<uint32_t>(data.size());
+        r.length = LINK_ARCZ_MAX_CHUNK;
+        std::vector<uint8_t> part;
+        if (!Request(LINK_CMD_SYSROMFS, &r, sizeof(r), status, &part)) {
+            return false;
+        }
+        if (status != LINK_OK) {
+            NoteArcResult(status, part);
+            return true;
+        }
+        const size_t before = data.size();
+        if (!TakeChunk(part, data, total)) {
+            status = LINK_ERR_IO;
+            return true;
+        }
+        if (data.size() == before) {
+            break;
+        }
+    } while (data.size() < total);
+    if (data.size() != total) {
+        status = LINK_ERR_IO;
+    }
+    return true;
+}
+
 bool Client::ArcHash(const LinkArchiveReq& archive, const std::string& path, uint64_t& size,
                      uint64_t& hash, uint16_t& status) {
     std::vector<uint8_t> req(sizeof(archive));

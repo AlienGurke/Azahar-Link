@@ -94,6 +94,11 @@ public:
     bool ArcRead(const LinkArchiveReq& archive, const std::string& path,
                  std::vector<uint8_t>& data, uint16_t& status);
     bool ArcInfo(const LinkArchiveReq& archive, LinkFormatInfo& info, uint16_t& status);
+    /// Part of a file (one request, at most LINK_ARCZ_MAX_CHUNK bytes).
+    bool ArcReadPart(const LinkArchiveReq& archive, const std::string& path, uint32_t offset,
+                     uint32_t length, std::vector<uint8_t>& data, uint16_t& status);
+    /// The RomFS (level 3) of a system data archive, as the 3DS's own file system reads it.
+    bool ReadSystemRomfs(uint64_t title_id, std::vector<uint8_t>& data, uint16_t& status);
     /// Size and FNV-1a 64 of a whole file (false + status BADCMD: the app is too old).
     bool ArcHash(const LinkArchiveReq& archive, const std::string& path, uint64_t& size,
                  uint64_t& hash, uint16_t& status);
