@@ -544,6 +544,29 @@ void Client::ReadConsoleClock() {
     Log("clock: 3DS minus PC (UTC) = " + std::to_string(console - pc) + " s" +
         (has_user_offset ? ", user time offset " + std::to_string(static_cast<int64_t>(user_offset))
                          : std::string(", user time offset unknown (old app)")));
+    if (out.size() >= 24) {
+        // the raw hardware clock next to the shown time, both as the 3DS has them
+        uint64_t rtc_ms = 0;
+        std::memcpy(&rtc_ms, out.data() + 16, 8);
+        const auto as_text = [](uint64_t ms) {
+            const std::time_t t = static_cast<std::time_t>(ms / 1000 - 2208988800ULL);
+            std::tm tm{};
+#ifdef _WIN32
+            gmtime_s(&tm, &t);
+#else
+            gmtime_r(&t, &tm);
+#endif
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M:%S", &tm);
+            return std::string(buf);
+        };
+        const double hours = (static_cast<double>(ms_since_1900) - static_cast<double>(rtc_ms)) /
+                             3'600'000.0;
+        char diff[64];
+        std::snprintf(diff, sizeof(diff), "%.2f h", hours);
+        Log("clock: shown " + as_text(ms_since_1900) + ", hardware clock (RTC) " +
+            as_text(rtc_ms) + ", shown minus RTC = " + diff);
+    }
 }
 
 // The Mii database of the 3DS (shared extdata F000000B, /CFL_DB.dat) goes to the place
