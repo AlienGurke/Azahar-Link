@@ -29,8 +29,10 @@ public:
     void SetBitrate(int bitrate);
 
     /// I420 input (Y, then U, then V, no padding). `force_key`: start with SPS/PPS + IDR.
+    /// `time_ms`: when the picture was taken (the rate control works with real time).
     /// `out`: Annex-B NAL units; empty when the encoder skipped the frame.
-    bool Encode(const uint8_t* i420, bool force_key, std::vector<uint8_t>& out, bool& is_key);
+    bool Encode(const uint8_t* i420, bool force_key, int64_t time_ms, std::vector<uint8_t>& out,
+                bool& is_key);
 
 private:
     struct Impl;

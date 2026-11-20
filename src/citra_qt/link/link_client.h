@@ -177,7 +177,7 @@ private:
     H264Encoder h264;
     std::atomic<bool> h264_capable{false}; // the 3DS decodes H.264, we can encode it
     std::atomic<bool> h264_force_key{false};
-    int h264_bitrate = 3'000'000;
+    int h264_bitrate = 6'000'000;
     std::vector<uint16_t> h264_last;
     std::vector<uint8_t> h264_yuv, h264_out;
     // statistics for the log (every 10 s)
@@ -242,6 +242,7 @@ private:
         int64_t sent_ms;
         std::vector<uint16_t> tiles;
         bool h264 = false;
+        bool parity = false; // H.264 repair packet: losing it breaks nothing
     };
     std::deque<SentPacket> in_flight;
     uint32_t video_frame_id = 0;

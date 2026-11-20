@@ -57,8 +57,8 @@ bool H264Encoder::Open(int width, int height, int fps, int bitrate) {
     p.eSpsPpsIdStrategy = CONSTANT_ID;
     p.bPrefixNalAddingCtrl = false;
     p.iComplexityMode = MEDIUM_COMPLEXITY;
-    p.iMinQp = 10; // fine detail (text) stays sharp: never coarser than this
-    p.iMaxQp = 30;
+    p.iMinQp = 8;
+    p.iMaxQp = 26; // fine detail (text) stays sharp: never coarser than this
     SSpatialLayerConfig& l = p.sSpatialLayers[0];
     l.iVideoWidth = width;
     l.iVideoHeight = height;
@@ -100,8 +100,8 @@ void H264Encoder::SetBitrate(int bitrate) {
     impl->enc->SetOption(ENCODER_OPTION_BITRATE, &info);
 }
 
-bool H264Encoder::Encode(const uint8_t* i420, bool force_key, std::vector<uint8_t>& out,
-                         bool& is_key) {
+bool H264Encoder::Encode(const uint8_t* i420, bool force_key, int64_t time_ms,
+                         std::vector<uint8_t>& out, bool& is_key) {
     out.clear();
     is_key = false;
     if (!impl->enc) {
@@ -120,6 +120,7 @@ bool H264Encoder::Encode(const uint8_t* i420, bool force_key, std::vector<uint8_
     pic.pData[0] = const_cast<uint8_t*>(i420);
     pic.pData[1] = pic.pData[0] + w * h;
     pic.pData[2] = pic.pData[1] + (w / 2) * (h / 2);
+    pic.uiTimeStamp = time_ms;
     SFrameBSInfo info{};
     if (impl->enc->EncodeFrame(&pic, &info) != cmResultSuccess) {
         return false;
@@ -155,7 +156,7 @@ bool H264Encoder::IsOpen() const {
     return false;
 }
 void H264Encoder::SetBitrate(int) {}
-bool H264Encoder::Encode(const uint8_t*, bool, std::vector<uint8_t>& out, bool& is_key) {
+bool H264Encoder::Encode(const uint8_t*, bool, int64_t, std::vector<uint8_t>& out, bool& is_key) {
     out.clear();
     is_key = false;
     return false;

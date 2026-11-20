@@ -1366,8 +1366,10 @@ void Client::ProcessAcks() {
                 lost = !received && d >= 3; // newer packets arrived, this one did not
             }
         }
-        // no receipt in time (e.g. it was the last packet before a pause)
-        if (!received && now - p.sent_ms > 150) {
+        // no receipt in time (e.g. it was the last packet before a pause). The 3DS WiFi
+        // sometimes holds its packets back a while: H.264 waits longer, since a wrong
+        // "lost" costs a key frame there
+        if (!received && now - p.sent_ms > (p.h264 ? 400 : 150)) {
             lost = true;
         }
         if (!received && !lost) {
@@ -1377,8 +1379,8 @@ void Client::ProcessAcks() {
             for (const uint16_t t : p.tiles) {
                 tile_level[t] = 255;
             }
-            if (p.h264) {
-                h264_force_key = true; // the 3DS waits for a key frame now
+            if (p.h264 && !p.parity) {
+                h264_force_key = true; // the 3DS could not repair it: it waits for a key frame
             }
             stat_lost++;
             stats_lost++;
@@ -1863,13 +1865,15 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     // the data rate follows the WiFi
     if (stat_received + stat_lost >= 60) {
         const double loss = static_cast<double>(stat_lost) / (stat_received + stat_lost);
+        // losses here are mostly the WiFi, not too much data (they come at 20 KB/s as
+        // well): only heavy loss lowers the rate
         int rate = h264_bitrate;
-        if (loss > 0.05) {
+        if (loss > 0.15) {
             rate = static_cast<int>(rate * 0.8);
-        } else if (loss < 0.01) {
-            rate += 100'000;
+        } else if (loss < 0.05) {
+            rate += 250'000;
         }
-        rate = std::clamp(rate, 800'000, 6'000'000);
+        rate = std::clamp(rate, 1'500'000, 6'000'000);
         if (rate != h264_bitrate) {
             h264_bitrate = rate;
             h264.SetBitrate(rate);
@@ -1884,7 +1888,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     h264_last = frame;
     ToRotatedI420(frame, h264_yuv);
     bool key = false;
-    if (!h264.Encode(h264_yuv.data(), force, h264_out, key) || h264_out.empty()) {
+    if (!h264.Encode(h264_yuv.data(), force, NowMs(), h264_out, key) || h264_out.empty()) {
         if (force) {
             h264_force_key = true; // try again with the next picture
         }
@@ -1902,21 +1906,38 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     const auto t0 = std::chrono::steady_clock::now();
     size_t sent_bytes = 0;
     std::vector<uint8_t> pk;
+    // repair packets: the XOR of every 1st/2nd data packet (see LinkProto.h)
+    const size_t groups = parts >= 4 ? 2 : 1;
+    const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
+    std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
     for (size_t i = 0; i < parts; i++) {
         const size_t off = i * LINK_H264_PART;
         const size_t len = std::min<size_t>(LINK_H264_PART, h264_out.size() - off);
+        uint8_t* par = &parity[(i % groups) * LINK_H264_PART];
+        for (size_t k = 0; k < len; k++) {
+            par[k] ^= h264_out[off + k];
+        }
+    }
+    for (size_t i = 0; i < parts + groups; i++) {
+        const bool is_parity = i >= parts;
+        const size_t off = i * LINK_H264_PART;
+        const size_t len =
+            is_parity ? LINK_H264_PART : std::min<size_t>(LINK_H264_PART, h264_out.size() - off);
         LinkFramePacket hdr = {};
         hdr.magic = LINK_H264_MAGIC;
         hdr.frameId = frame_id;
         hdr.seq = video_seq++;
-        hdr.baseSeq = 0;
-        hdr.entryCount = static_cast<uint16_t>(len);
+        hdr.baseSeq = is_parity ? static_cast<uint32_t>(LINK_H264_PARITY | (parts << 8) |
+                                                         (groups << 4) | (i - parts))
+                                : 0;
+        hdr.entryCount = static_cast<uint16_t>(is_parity ? last_len : len);
         hdr.flags = static_cast<uint16_t>((i << LINK_FRAME_INDEX_SHIFT) |
                                           (i + 1 == parts ? LINK_FRAME_LAST : 0) |
                                           (key ? LINK_FRAME_KEY : 0));
         pk.resize(sizeof(hdr) + len);
         std::memcpy(pk.data(), &hdr, sizeof(hdr));
-        std::memcpy(pk.data() + sizeof(hdr), h264_out.data() + off, len);
+        std::memcpy(pk.data() + sizeof(hdr),
+                    is_parity ? &parity[(i - parts) * LINK_H264_PART] : &h264_out[off], len);
         {
             std::scoped_lock lock{udp_mutex};
             if (udp_sock == -1) {
@@ -1929,6 +1950,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         sp.seq = hdr.seq;
         sp.sent_ms = NowMs();
         sp.h264 = true;
+        sp.parity = is_parity;
         in_flight.push_back(std::move(sp));
         sent_bytes += pk.size();
         const auto due = t0 + std::chrono::microseconds(
