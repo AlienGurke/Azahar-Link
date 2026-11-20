@@ -243,6 +243,7 @@ private:
         std::vector<uint16_t> tiles;
         bool h264 = false;
         bool parity = false; // H.264 repair packet: losing it breaks nothing
+        uint32_t frame_end = 0; // H.264: seq of the frame's last packet (parity included)
     };
     std::deque<SentPacket> in_flight;
     uint32_t video_frame_id = 0;

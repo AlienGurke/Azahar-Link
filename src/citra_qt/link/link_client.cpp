@@ -1363,7 +1363,13 @@ void Client::ProcessAcks() {
             const int32_t d = static_cast<int32_t>(a_seq - p.seq);
             if (d >= 0) {
                 received = d < 64 && ((a_mask >> d) & 1);
-                lost = !received && d >= 3; // newer packets arrived, this one did not
+                if (p.h264) {
+                    // the 3DS may still rebuild it from the parity at the end of its frame:
+                    // only lost once packets after the whole frame were confirmed
+                    lost = !received && static_cast<int32_t>(a_seq - p.frame_end) >= 2;
+                } else {
+                    lost = !received && d >= 3; // newer packets arrived, this one did not
+                }
             }
         }
         // no receipt in time (e.g. it was the last packet before a pause). The 3DS WiFi
@@ -1921,8 +1927,9 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     size_t sent_bytes = 0;
     std::vector<uint8_t> pk;
     // repair packets: the XOR of every 1st/2nd data packet (see LinkProto.h)
-    // more groups for bigger frames: up to 4 packets lost in a row can be rebuilt
-    const size_t groups = parts >= 10 ? 4 : parts >= 7 ? 3 : parts >= 4 ? 2 : 1;
+    // up to 4 groups: up to 4 packets lost in a row can be rebuilt (small frames: every
+    // packet has its own copy - they are small, the WiFi has room)
+    const size_t groups = std::min<size_t>(4, parts);
     const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
     std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
     for (size_t i = 0; i < parts; i++) {
@@ -1966,6 +1973,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         sp.sent_ms = NowMs();
         sp.h264 = true;
         sp.parity = is_parity;
+        sp.frame_end = hdr.seq + static_cast<uint32_t>(parts + groups - 1 - i);
         in_flight.push_back(std::move(sp));
         sent_bytes += pk.size();
         const auto due = t0 + std::chrono::microseconds(

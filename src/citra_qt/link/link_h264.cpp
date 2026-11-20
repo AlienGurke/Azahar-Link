@@ -53,6 +53,7 @@ bool H264Encoder::Open(int width, int height, int fps, int bitrate) {
     p.bEnableBackgroundDetection = false; // not for screen content
     p.bEnableAdaptiveQuant = false;
     p.bEnableLongTermReference = false;
+    p.bEnableSceneChangeDetect = false; // a fade or a new screen is no reason for a big key frame
     p.iNumRefFrame = 1;
     p.eSpsPpsIdStrategy = CONSTANT_ID;
     p.bPrefixNalAddingCtrl = false;
