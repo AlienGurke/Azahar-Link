@@ -1788,6 +1788,19 @@ void Client::VideoStats(int64_t now) {
                         h264_capable ? fmt::format(", {} key frames, target {} kbit/s",
                                                    stats_keys, h264_bitrate / 1000)
                                      : fmt::format(", rate {:.0f} KB/s", budget_bytes / 1024)));
+        if (h264_capable) {
+            // what the 3DS saw (never waits for a busy connection)
+            uint16_t st = 0;
+            std::vector<uint8_t> out;
+            if (TryRequest(LINK_CMD_VIDEOSTATS, nullptr, 0, st, &out) == 1 && st == LINK_OK &&
+                out.size() >= 16) {
+                uint32_t v[4];
+                std::memcpy(v, out.data(), sizeof(v));
+                Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
+                                "rebuilt packets {}, decoder errors {}",
+                                v[0], v[1], v[2], v[3]));
+            }
+        }
     }
     stats_since = now;
     stats_frames = stats_bytes = stats_keys = stats_received = stats_lost = 0;
@@ -1795,7 +1808,7 @@ void Client::VideoStats(int64_t now) {
 
 namespace {
 // the picture turned for the 3DS framebuffer (coded column c, row r = screen x r,
-// y 239 - c) as I420, BT.601 limited range
+// y 239 - c) as I420, BT.601 full range (the 3DS decoder shows Y 0..255 as 0..255)
 void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) {
     constexpr int W = LINK_H264_WIDTH, H = LINK_H264_HEIGHT;
     yuv.resize(W * H * 3 / 2);
@@ -1816,7 +1829,7 @@ void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) 
                     int R, G, B;
                     rgb(r + dy, c + dx, R, G, B);
                     Y[(r + dy) * W + c + dx] =
-                        static_cast<uint8_t>(16 + ((66 * R + 129 * G + 25 * B + 128) >> 8));
+                        static_cast<uint8_t>((77 * R + 150 * G + 29 * B + 128) >> 8);
                     sr += R;
                     sg += G;
                     sb += B;
@@ -1825,10 +1838,11 @@ void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) 
             sr /= 4;
             sg /= 4;
             sb /= 4;
-            U[(r / 2) * (W / 2) + c / 2] =
-                static_cast<uint8_t>(128 + ((-38 * sr - 74 * sg + 112 * sb + 128) >> 8));
-            V[(r / 2) * (W / 2) + c / 2] =
-                static_cast<uint8_t>(128 + ((112 * sr - 94 * sg - 18 * sb + 128) >> 8));
+            const auto clamp8 = [](int v) {
+                return static_cast<uint8_t>(v < 0 ? 0 : v > 255 ? 255 : v);
+            };
+            U[(r / 2) * (W / 2) + c / 2] = clamp8(128 + ((-43 * sr - 85 * sg + 128 * sb + 128) >> 8));
+            V[(r / 2) * (W / 2) + c / 2] = clamp8(128 + ((128 * sr - 107 * sg - 21 * sb + 128) >> 8));
         }
     }
 }
@@ -1837,7 +1851,7 @@ void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) 
 // New 3DS: the bottom screen as H.264. Unchanged pictures are not sent; a lost
 // packet makes the next frame a key frame (the 3DS shows nothing broken meanwhile).
 void Client::SendH264(const std::vector<uint16_t>& frame) {
-    constexpr double kPaceBytesPerSec = 3.0e6;
+    constexpr double kPaceBytesPerSec = 2.0e6;
     if (frame.size() != static_cast<size_t>(kWidth * kHeight)) {
         return;
     }
@@ -1907,7 +1921,8 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     size_t sent_bytes = 0;
     std::vector<uint8_t> pk;
     // repair packets: the XOR of every 1st/2nd data packet (see LinkProto.h)
-    const size_t groups = parts >= 4 ? 2 : 1;
+    // more groups for bigger frames: up to 4 packets lost in a row can be rebuilt
+    const size_t groups = parts >= 10 ? 4 : parts >= 7 ? 3 : parts >= 4 ? 2 : 1;
     const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
     std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
     for (size_t i = 0; i < parts; i++) {

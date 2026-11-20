@@ -67,6 +67,14 @@ bool H264Encoder::Open(int width, int height, int fps, int bitrate) {
     l.iMaxSpatialBitrate = UNSPECIFIED_BIT_RATE;
     l.uiProfileIdc = PRO_BASELINE;
     l.sSliceArgument.uiSliceMode = SM_SINGLE_SLICE;
+    // full range (0-255): the 3DS hardware decoder turns Y=16 into grey, not black
+    l.bVideoSignalTypePresent = true;
+    l.uiVideoFormat = 5; // unspecified
+    l.bFullRange = true;
+    l.bColorDescriptionPresent = true;
+    l.uiColorPrimaries = 6;          // smpte170m (BT.601)
+    l.uiTransferCharacteristics = 6; // smpte170m
+    l.uiColorMatrix = 6;             // smpte170m
     if (impl->enc->InitializeExt(&p) != 0) {
         Close();
         return false;
