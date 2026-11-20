@@ -32,6 +32,8 @@ add_library(citra_qt STATIC EXCLUDE_FROM_ALL
     link/LinkProto.h
     link/link_client.cpp
     link/link_client.h
+    link/link_h264.cpp
+    link/link_h264.h
     link/link_save.cpp
     link/link_save.h
     link/lz4/lz4.c
@@ -316,6 +318,17 @@ target_link_libraries(citra_qt PRIVATE nihstro-headers Qt6::Multimedia Qt6::Conc
 target_link_libraries(citra_qt PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
 if (WIN32)
     target_link_libraries(citra_qt PRIVATE ws2_32)
+endif()
+# 3DS Link: H.264 for the bottom screen of a New 3DS, if OpenH264 is there
+find_path(OPENH264_INCLUDE_DIR wels/codec_api.h)
+find_library(OPENH264_LIBRARY NAMES openh264)
+if (OPENH264_INCLUDE_DIR AND OPENH264_LIBRARY)
+    message(STATUS "3DS Link: H.264 with ${OPENH264_LIBRARY}")
+    target_include_directories(citra_qt PRIVATE ${OPENH264_INCLUDE_DIR})
+    target_link_libraries(citra_qt PRIVATE ${OPENH264_LIBRARY})
+    target_compile_definitions(citra_qt PRIVATE LINK_HAVE_OPENH264)
+else()
+    message(STATUS "3DS Link: no OpenH264 - bottom screen as tiles only")
 endif()
 # 3DS Link: LZ4 is C, the precompiled headers are C++
 set_source_files_properties(link/lz4/lz4.c PROPERTIES SKIP_PRECOMPILE_HEADERS ON)

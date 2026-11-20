@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "citra_qt/link/LinkProto.h"
+#include "citra_qt/link/link_h264.h"
 
 namespace Link {
 
@@ -88,6 +89,7 @@ public:
     /// Settings (3DS Link > Settings): what happens on every connect.
     std::atomic<bool> option_miis{true};       // take the Miis of the 3DS
     std::atomic<bool> option_system_data{true}; // take missing system data from the 3DS
+    std::atomic<bool> option_h264{true};        // bottom screen as H.264 on a New 3DS
 
     /// Copies the Mii database (Mii Maker) of the 3DS into Azahar now. It also happens
     /// on every connect; Azahar's own database is kept once as CFL_DB.dat.before-3ds-link.
@@ -170,6 +172,17 @@ private:
     // video
     void ProcessAcks();
     void SendTiles(const std::vector<uint16_t>& frame);
+    void SendH264(const std::vector<uint16_t>& frame);
+    void VideoStats(int64_t now);
+    H264Encoder h264;
+    std::atomic<bool> h264_capable{false}; // the 3DS decodes H.264, we can encode it
+    std::atomic<bool> h264_force_key{false};
+    int h264_bitrate = 3'000'000;
+    std::vector<uint16_t> h264_last;
+    std::vector<uint8_t> h264_yuv, h264_out;
+    // statistics for the log (every 10 s)
+    int64_t stats_since = 0;
+    uint64_t stats_frames = 0, stats_bytes = 0, stats_keys = 0, stats_received = 0, stats_lost = 0;
 
     std::atomic<State> state{State::Disconnected};
     std::atomic<bool> stop_requested{false};
@@ -228,6 +241,7 @@ private:
         uint32_t seq;
         int64_t sent_ms;
         std::vector<uint16_t> tiles;
+        bool h264 = false;
     };
     std::deque<SentPacket> in_flight;
     uint32_t video_frame_id = 0;

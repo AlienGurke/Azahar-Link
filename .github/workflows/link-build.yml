@@ -34,6 +34,18 @@ jobs:
         uses: azahar-emu/msvc-dev-cmd@v1
       - name: Install tools
         run: choco install -y --no-progress ccache ninja
+      - name: Cache OpenH264
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-openh264-x64-windows-static-md-v1
+      - name: OpenH264 (bottom screen as H.264)
+        run: |
+          export VCPKG_DEFAULT_BINARY_CACHE="$(cygpath -w "$GITHUB_WORKSPACE/.vcpkg-cache")"
+          mkdir -p "$GITHUB_WORKSPACE/.vcpkg-cache"
+          VCPKG="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")"
+          "$VCPKG/vcpkg.exe" install openh264:x64-windows-static-md
+          echo "OPENH264_PREFIX=$(cygpath -m "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows-static-md" >> "$GITHUB_ENV"
       - name: Disable line ending translation
         run: git config --global core.autocrlf input
       - name: Build
@@ -47,7 +59,8 @@ jobs:
             -DENABLE_TESTS=OFF \
             -DENABLE_ROOM_STANDALONE=OFF \
             -DENABLE_LTO=OFF \
-            -DCITRA_WARNINGS_AS_ERRORS=OFF
+            -DCITRA_WARNINGS_AS_ERRORS=OFF \
+            -DCMAKE_PREFIX_PATH="$OPENH264_PREFIX"
           ninja
           ninja bundle
           ccache -s
