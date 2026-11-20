@@ -205,6 +205,17 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         });
     }
     add_option("opt_write_ask", "write_ask", [](bool on) { write_ask = on; });
+    {
+        // while playing: every save of the game goes to the 3DS too (needs writing back on)
+        QAction* a = options->addAction(Q("opt_write_live"));
+        a->setCheckable(true);
+        write_live = settings->value(QStringLiteral("write_live"), false).toBool();
+        a->setChecked(write_live);
+        connect(a, &QAction::toggled, this, [this](bool on) {
+            write_live = on;
+            settings->setValue(QStringLiteral("write_live"), on);
+        });
+    }
     QMenu* save_menu = options->addMenu(Q("opt_save"));
     QActionGroup* save_group = new QActionGroup(save_menu);
     save_mode = settings->value(QStringLiteral("save_mode"), 0).toInt();
@@ -242,11 +253,20 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
 }
 
 LinkUi::~LinkUi() {
+    if (live_thread.joinable()) {
+        live_thread.join();
+    }
     // before the renderer and the HID service go away
     Get().Disconnect();
 }
 
 int LinkUi::save_mode = 0;
+bool LinkUi::write_live = false;
+bool LinkUi::live_ok = false;
+bool LinkUi::live_wrote = false;
+u64 LinkUi::live_fp = 0;
+qint64 LinkUi::live_changed_at = 0;
+qint64 LinkUi::live_last_write = 0;
 std::optional<u64> LinkUi::link_user_offset;
 LinkUi* LinkUi::instance = nullptr;
 bool LinkUi::write_back = false;
@@ -255,9 +275,14 @@ u64 LinkUi::loaded_program_id = 0;
 u64 LinkUi::loaded_extdata_id = 0;
 
 void LinkUi::AfterShutdown(QWidget* parent) {
+    if (instance) {
+        instance->FinishLiveWrite(); // a write while playing must be done first
+    }
     const u64 program_id = loaded_program_id;
     const u64 extdata_id = loaded_extdata_id;
     loaded_program_id = 0;
+    const bool live_session = live_ok;
+    live_ok = false;
     if (program_id == 0 || !write_back) {
         return;
     }
@@ -265,7 +290,8 @@ void LinkUi::AfterShutdown(QWidget* parent) {
         QMessageBox::warning(parent, Q("write_title"), Q("write_no_3ds"));
         return;
     }
-    if (write_ask && QMessageBox::question(parent, Q("write_title"), Q("write_ask")) !=
+    if (write_ask && !(write_live && live_session) &&
+        QMessageBox::question(parent, Q("write_title"), Q("write_ask")) !=
                          QMessageBox::Yes) {
         return;
     }
@@ -281,12 +307,18 @@ void LinkUi::AfterShutdown(QWidget* parent) {
     SaveExportResult result;
     QEventLoop loop;
     std::thread worker([&] {
-        result = ExportSaveTo3DS(program_id, extdata_id, [&progress](const std::string& text) {
-            QMetaObject::invokeMethod(
-                &progress,
-                [&progress, label = QString::fromStdString(text)] { progress.setLabelText(label); },
-                Qt::QueuedConnection);
-        });
+        result = ExportSaveTo3DS(
+            program_id, extdata_id,
+            [&progress](const std::string& text) {
+                QMetaObject::invokeMethod(
+                    &progress,
+                    [&progress, label = QString::fromStdString(text)] {
+                        progress.setLabelText(label);
+                    },
+                    Qt::QueuedConnection);
+            },
+            !live_wrote); // after writes while playing, the 3DS state before is already kept
+        live_wrote = false;
         QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
     });
     loop.exec();
@@ -376,6 +408,11 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
     case SaveImportResult::Outcome::Imported:
         loaded_program_id = program_id; // its save may go back to the 3DS when it stops
         loaded_extdata_id = extdata_id;
+        live_ok = true;
+        live_wrote = false;
+        live_fp = SaveFingerprint(program_id, extdata_id);
+        live_changed_at = 0;
+        live_last_write = 0;
         if (instance) {
             instance->settings->setValue(QStringLiteral("last_title"),
                                          static_cast<qulonglong>(program_id));
@@ -425,6 +462,62 @@ void LinkUi::ShowQueued() {
     shown_until = now + 7000;
 }
 
+// While playing: when the game saved (Azahar's save files changed and then stayed the same
+// for a few seconds), the save goes to the 3DS in the background - the same checked write
+// as when the game stops. On a conflict or error it stops for this game.
+void LinkUi::LiveWrite() {
+    if (live_thread.joinable() && !live_busy) {
+        live_thread.join();
+        const SaveExportResult r = live_result;
+        if (r.outcome == SaveExportResult::Outcome::Written) {
+            live_wrote = true;
+            window->statusBar()->showMessage(Q("live_done"), 5000);
+        } else if (r.outcome != SaveExportResult::Outcome::NothingToDo) {
+            live_ok = false; // nothing more while playing; the end of the game asks again
+            queued.append(Q("live_stopped").replace(QStringLiteral("%1"),
+                                                    QString::fromStdString(r.message)));
+        }
+    }
+    if (!write_back || !write_live || !live_ok || loaded_program_id == 0 || live_busy ||
+        Get().GetState() != State::Connected || !Core::System::GetInstance().IsPoweredOn()) {
+        return;
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - live_checked_at < 2000) {
+        return;
+    }
+    live_checked_at = now;
+    const u64 fp = SaveFingerprint(loaded_program_id, loaded_extdata_id);
+    if (fp != live_fp) {
+        live_fp = fp; // changed: wait until it stays like this
+        live_changed_at = now;
+        return;
+    }
+    if (live_changed_at == 0 || now - live_changed_at < 5000 || now - live_last_write < 20000) {
+        return;
+    }
+    live_changed_at = 0;
+    live_last_write = now;
+    live_busy = true;
+    const u64 pid = loaded_program_id, ext = loaded_extdata_id;
+    const bool backup = !live_wrote; // the first write of a session keeps the 3DS state
+    live_thread = std::thread([this, pid, ext, backup] {
+        live_result = ExportSaveTo3DS(
+            pid, ext, [](const std::string&) {}, backup);
+        live_busy = false;
+    });
+}
+
+void LinkUi::FinishLiveWrite() {
+    if (live_thread.joinable()) {
+        live_thread.join();
+        if (live_result.outcome == SaveExportResult::Outcome::Written) {
+            live_wrote = true;
+        }
+        live_busy = false;
+    }
+}
+
 // wishes from the 3DS: start a game from the list, end the game, send the list again
 void LinkUi::HandleRemote() {
     static bool busy = false; // starting a game can show dialogs (and run this timer again)
@@ -465,6 +558,7 @@ void LinkUi::HandleRemote() {
 void LinkUi::Poll() {
     Client& client = Get();
     HandleRemote();
+    LiveWrite();
 
     // the running game, for the 3DS app
     Core::System& system = Core::System::GetInstance();

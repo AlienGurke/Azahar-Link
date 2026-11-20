@@ -16,6 +16,8 @@
 
 #include <map>
 #include <string>
+#include <thread>
+#include "citra_qt/link/link_save.h"
 
 class GameList;
 class QAction;
@@ -49,6 +51,8 @@ private:
     void Poll();
     void UpdateLibrary();
     void HandleRemote();
+    void LiveWrite();
+    void FinishLiveWrite();
 
     QMainWindow* window;
     QSettings* settings;
@@ -68,6 +72,15 @@ private:
     static LinkUi* instance;
     static bool write_back;     // write the save back when the game stops (off by default)
     static bool write_ask;      // ask before that
+    static bool write_live;     // also whenever the game saves (while playing)
+    static bool live_ok;        // writes while playing go on for this game
+    static bool live_wrote;     // something was written while playing (backup made)
+    static u64 live_fp;         // Azahar's save files as last seen
+    static qint64 live_changed_at, live_last_write;
+    qint64 live_checked_at = 0;
+    std::thread live_thread;
+    std::atomic<bool> live_busy{false};
+    SaveExportResult live_result;
     // the game that runs, if its save came from the 3DS
     static u64 loaded_program_id;
     static u64 loaded_extdata_id;

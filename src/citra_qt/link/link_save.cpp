@@ -503,8 +503,44 @@ bool WriteDifferences(Client& client, const LinkArchiveReq& archive, const Tree&
 
 } // namespace
 
+u64 SaveFingerprint(u64 program_id, u64 extdata_id) {
+    const u32 high = static_cast<u32>(program_id >> 32);
+    const u32 low = static_cast<u32>(program_id & 0xFFFFFFFF);
+    const u32 ext_id = extdata_id != 0 ? static_cast<u32>(extdata_id) : low >> 8;
+    const std::string sdmc = FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir);
+    const fs::path dirs[2] = {
+        U8(fmt::format("{}Nintendo 3DS/{}/{}/title/{:08x}/{:08x}/data/00000001", sdmc, kId, kId,
+                       high, low)),
+        U8(fmt::format("{}Nintendo 3DS/{}/{}/extdata/00000000/{:08x}/user", sdmc, kId, kId,
+                       ext_id)),
+    };
+    u64 h = 0xcbf29ce484222325ULL;
+    const auto mix = [&h](const void* data, size_t len) {
+        const u8* p = static_cast<const u8*>(data);
+        for (size_t i = 0; i < len; i++) {
+            h = (h ^ p[i]) * 0x100000001b3ULL;
+        }
+    };
+    for (const fs::path& dir : dirs) {
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(dir, ec);
+             !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            const std::string rel = it->path().lexically_relative(dir).generic_string();
+            mix(rel.data(), rel.size());
+            if (it->is_regular_file(ec)) {
+                const u64 size = it->file_size(ec);
+                const auto when = it->last_write_time(ec).time_since_epoch().count();
+                mix(&size, sizeof(size));
+                mix(&when, sizeof(when));
+            }
+        }
+    }
+    return h;
+}
+
 SaveExportResult ExportSaveTo3DS(u64 program_id, u64 extdata_id,
-                                 const std::function<void(const std::string&)>& progress) {
+                                 const std::function<void(const std::string&)>& progress,
+                                 bool make_backup) {
     SaveExportResult result;
     Client& client = Get();
     const u32 high = static_cast<u32>(program_id >> 32);
@@ -573,17 +609,21 @@ SaveExportResult ExportSaveTo3DS(u64 program_id, u64 extdata_id,
     }
 
     // --- 2. backup of the 3DS state (= the cache) and of what is written ---
-    progress(Text("save_backup"));
     const fs::path title_backups = U8(BackupRoot() + tid);
     const fs::path backup = title_backups / U8(NowName() + "-to-3ds");
-    if (!WriteTree(base_save, backup / "3ds-save-before") ||
+    if (make_backup) {
+        progress(Text("save_backup"));
+    }
+    if (make_backup && (!WriteTree(base_save, backup / "3ds-save-before") ||
         (has_ext && !WriteTree(base_ext, backup / "3ds-extdata-before" / "user")) ||
         !WriteTree(pc_save, backup / "pc-save-written") ||
-        (has_ext && !WriteTree(pc_ext, backup / "pc-extdata-written" / "user"))) {
+        (has_ext && !WriteTree(pc_ext, backup / "pc-extdata-written" / "user")))) {
         result.message = Format(Text("save_write_failed"), FromPath(backup));
         return result;
     }
-    result.backup_dir = FromPath(backup);
+    if (make_backup) {
+        result.backup_dir = FromPath(backup);
+    }
 
     // --- 3. the save: write, check every file on the 3DS, only then commit ---
     uint16_t status = 0;

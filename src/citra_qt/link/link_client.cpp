@@ -266,6 +266,11 @@ std::string Text(const char* key) {
         {"opt_write", {"Write the save back to the 3DS when the game stops",
                        "Spielstand beim Beenden auf den 3DS zurückschreiben"}},
         {"opt_write_ask", {"Ask before writing to the 3DS", "Vor dem Schreiben auf den 3DS fragen"}},
+        {"opt_write_live", {"Also send it to the 3DS whenever the game saves",
+                            "Auch bei jedem Speichern im Spiel an den 3DS senden"}},
+        {"live_done", {"Save sent to the 3DS (checked)", "Spielstand an den 3DS gesendet (geprüft)"}},
+        {"live_stopped", {"Sending to the 3DS while playing stopped: %1",
+                          "Senden an den 3DS während des Spielens angehalten: %1"}},
         {"write_title", {"Save to the 3DS", "Spielstand auf den 3DS"}},
         {"write_ask", {"Write the save of this game back to the 3DS?\n\nThe save on the 3DS is "
                        "kept as a backup on the PC first.",
@@ -1498,11 +1503,15 @@ int TileBase(int t) {
 
 void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // Rule: every tile whose content changed is sent in the same update, so the
-    // 3DS never shows a mix of old and new. If that does not fit the budget,
-    // tiles are sent coarser (half, then quarter resolution). Spare budget is
-    // used to sharpen previews and to refresh a few tiles.
+    // 3DS never shows a mix of old and new. The data rate follows the WiFi (less when
+    // packets get lost); a frame may take up to kMaxFrameSeconds of it. Big changes
+    // (fast scrolling) therefore come sharp, at a lower frame rate - frames that
+    // arrive meanwhile are skipped, their changes go with the next one. Only if a
+    // frame would take longer are tiles sent coarser (half, then quarter
+    // resolution). Spare budget sharpens previews and refreshes a few tiles.
     constexpr int kRefreshPerFrame = 4;
-    constexpr double kMinBudget = 12 * 1024, kMaxBudget = 64 * 1024;
+    constexpr double kMinRate = 0.5e6, kMaxRate = 4.0e6; // bytes per second
+    constexpr double kMaxFrameSeconds = 0.09;
 
     if (frame.size() != static_cast<size_t>(kWidth * kHeight)) {
         return;
@@ -1518,7 +1527,7 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         if (video_seq == 0) { // start where a previous session cannot be ahead
             video_seq = static_cast<uint32_t>(NowMs() * 4);
         }
-        budget_bytes = 24 * 1024;
+        budget_bytes = 1.5e6; // the data rate, bytes per second
         stat_received = stat_lost = 0;
     }
 
@@ -1526,15 +1535,15 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     if (stat_received + stat_lost >= 30) {
         const double loss = static_cast<double>(stat_lost) / (stat_received + stat_lost);
         if (loss > 0.05) {
-            budget_bytes *= 0.75;
+            budget_bytes *= 0.8;
         } else if (loss < 0.02) {
-            budget_bytes += 2048;
+            budget_bytes += 50e3;
         }
-        budget_bytes = std::min(kMaxBudget, std::max(kMinBudget, budget_bytes));
+        budget_bytes = std::min(kMaxRate, std::max(kMinRate, budget_bytes));
         stat_received = stat_lost = 0;
     }
-    const size_t budget = static_cast<size_t>(budget_bytes);
-    const double bytes_per_sec = std::min(6.0e6, std::max(2.0e6, budget_bytes * 120.0));
+    const double bytes_per_sec = budget_bytes;
+    const size_t budget = static_cast<size_t>(bytes_per_sec * kMaxFrameSeconds);
 
     auto content_changed = [&](int t) {
         const int base = TileBase(t);

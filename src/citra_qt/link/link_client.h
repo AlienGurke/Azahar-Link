@@ -234,7 +234,7 @@ private:
     uint32_t video_seq = 0;
     uint32_t refresh_cursor = 0;
     uint32_t scan_start = 0;
-    double budget_bytes = 24 * 1024;
+    double budget_bytes = 1.5e6; // video data rate, bytes per second
     uint32_t stat_received = 0, stat_lost = 0;
     bool ack_new = false;
     bool ack_valid = false;

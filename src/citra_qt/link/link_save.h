@@ -51,8 +51,15 @@ struct SaveExportResult {
 /// 3DS still has exactly what was loaded from it. Before writing, the 3DS state is kept as a
 /// backup; after writing, every file is checked on the 3DS before the save is committed
 /// (savedata changes only count from that moment). Blocking.
+/// `make_backup` false: no backup folder (while playing, after the first write of a session -
+/// the 3DS state before is the save written last time).
 SaveExportResult ExportSaveTo3DS(u64 program_id, u64 extdata_id,
-                                 const std::function<void(const std::string&)>& progress);
+                                 const std::function<void(const std::string&)>& progress,
+                                 bool make_backup = true);
+
+/// Changes whenever a file of Azahar's copy of the save or extdata changes (names, sizes,
+/// times): to notice that the game saved.
+u64 SaveFingerprint(u64 program_id, u64 extdata_id);
 
 /// The system data archives (Mii graphics CFL_Res, shared fonts, region and country data,
 /// ...) that Azahar lacks are copied from the 3DS's CTR-NAND, as they are stored there.
