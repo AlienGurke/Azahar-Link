@@ -70,4 +70,8 @@ int CopySystemDataFrom3DS(std::string& message);
 /// Folder with the backups of all games.
 std::string BackupRoot();
 
+/// Besides the newest 20 backups of a game, the first backup of each of the last
+/// `backup_days` days with backups is kept (setting, default 14).
+extern int backup_days;
+
 } // namespace Link

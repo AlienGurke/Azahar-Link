@@ -165,6 +165,17 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     auto_action->setCheckable(true);
     auto_action->setChecked(settings->value(QStringLiteral("autoconnect"), false).toBool());
 
+    // defaults like melonDS Link: the save comes from the 3DS when a game starts and goes
+    // back whenever the game saves and when it stops, without questions. Earlier versions
+    // started more carefully; their settings are switched over once.
+    if (settings->value(QStringLiteral("defaults_version"), 0).toInt() < 2) {
+        settings->setValue(QStringLiteral("write_back"), true);
+        settings->setValue(QStringLiteral("write_live"), true);
+        settings->setValue(QStringLiteral("write_ask"), false);
+        settings->setValue(QStringLiteral("save_mode"), 1);
+        settings->setValue(QStringLiteral("defaults_version"), 2);
+    }
+
     // settings: what happens on connect and when a game starts (all on by default)
     QMenu* options = menu->addMenu(Q("settings"));
     const auto add_option = [&](const char* key, const char* name, auto apply) {
@@ -197,7 +208,7 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         // writing back is off until switched on on purpose
         QAction* a = options->addAction(Q("opt_write"));
         a->setCheckable(true);
-        write_back = settings->value(QStringLiteral("write_back"), false).toBool();
+        write_back = settings->value(QStringLiteral("write_back"), true).toBool();
         a->setChecked(write_back);
         connect(a, &QAction::toggled, this, [this](bool on) {
             write_back = on;
@@ -209,7 +220,7 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         // while playing: every save of the game goes to the 3DS too (needs writing back on)
         QAction* a = options->addAction(Q("opt_write_live"));
         a->setCheckable(true);
-        write_live = settings->value(QStringLiteral("write_live"), false).toBool();
+        write_live = settings->value(QStringLiteral("write_live"), true).toBool();
         a->setChecked(write_live);
         connect(a, &QAction::toggled, this, [this](bool on) {
             write_live = on;
@@ -218,7 +229,7 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     }
     QMenu* save_menu = options->addMenu(Q("opt_save"));
     QActionGroup* save_group = new QActionGroup(save_menu);
-    save_mode = settings->value(QStringLiteral("save_mode"), 0).toInt();
+    save_mode = settings->value(QStringLiteral("save_mode"), 1).toInt();
     int mode = 0;
     for (const char* key : {"opt_save_ask", "opt_save_always", "opt_save_never"}) {
         QAction* a = save_menu->addAction(Q(key));
@@ -230,6 +241,24 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
             settings->setValue(QStringLiteral("save_mode"), mode);
         });
         mode++;
+    }
+    {
+        // daily backups: how many days keep their first backup
+        backup_days = settings->value(QStringLiteral("backup_days"), 14).toInt();
+        QAction* a = options->addAction(Q("opt_backup_days").replace(
+            QStringLiteral("%1"), QString::number(backup_days)));
+        connect(a, &QAction::triggered, this, [this, a] {
+            bool ok = false;
+            const int days = QInputDialog::getInt(window, Q("opt_backup_days_title"),
+                                                  Q("opt_backup_days_ask"), backup_days, 0,
+                                                  3650, 1, &ok);
+            if (ok) {
+                backup_days = days;
+                settings->setValue(QStringLiteral("backup_days"), days);
+                a->setText(Q("opt_backup_days").replace(QStringLiteral("%1"),
+                                                        QString::number(days)));
+            }
+        });
     }
     disconnect_action->setEnabled(false);
 

@@ -28,7 +28,7 @@ namespace {
 
 // Azahar's folders (see core/file_sys/archive_source_sd_savedata.cpp, archive_extsavedata.cpp)
 constexpr const char* kId = "00000000000000000000000000000000";
-constexpr int kKeepBackups = 20;
+constexpr size_t kKeepBackups = 20;
 
 fs::path U8(const std::string& s) {
     return fs::path(std::u8string(s.begin(), s.end()));
@@ -274,9 +274,29 @@ void PruneBackups(const fs::path& title_dir) {
         }
     }
     std::sort(dirs.begin(), dirs.end()); // names are the time: oldest first
-    while (dirs.size() > static_cast<size_t>(kKeepBackups)) {
-        fs::remove_all(dirs.front(), ec);
-        dirs.erase(dirs.begin());
+    // kept: the newest kKeepBackups, and the first backup of each of the last
+    // `backup_days` days with a backup (names start with the date, YYYY-MM-DD)
+    std::vector<bool> keep(dirs.size(), false);
+    for (size_t i = dirs.size() > kKeepBackups ? dirs.size() - kKeepBackups : 0; i < dirs.size();
+         i++) {
+        keep[i] = true;
+    }
+    std::vector<std::pair<std::string, size_t>> first_of_day; // newest day first
+    for (size_t i = dirs.size(); i-- > 0;) {
+        const std::string day = dirs[i].filename().string().substr(0, 10);
+        if (!first_of_day.empty() && first_of_day.back().first == day) {
+            first_of_day.back().second = i; // an earlier one of the same day
+        } else {
+            first_of_day.emplace_back(day, i);
+        }
+    }
+    for (size_t d = 0; d < first_of_day.size() && d < static_cast<size_t>(backup_days); d++) {
+        keep[first_of_day[d].second] = true;
+    }
+    for (size_t i = 0; i < dirs.size(); i++) {
+        if (!keep[i]) {
+            fs::remove_all(dirs[i], ec);
+        }
     }
 }
 
@@ -824,6 +844,8 @@ int CopySystemDataFrom3DS(std::string& message) {
     }
     return copied;
 }
+
+int backup_days = 14;
 
 std::string BackupRoot() {
     return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/backups/";

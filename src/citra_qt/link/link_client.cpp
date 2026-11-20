@@ -268,6 +268,12 @@ std::string Text(const char* key) {
         {"opt_write_ask", {"Ask before writing to the 3DS", "Vor dem Schreiben auf den 3DS fragen"}},
         {"opt_write_live", {"Also send it to the 3DS whenever the game saves",
                             "Auch bei jedem Speichern im Spiel an den 3DS senden"}},
+        {"opt_backup_days", {"Daily backups: keep %1 days...", "Tägliche Backups: %1 Tage behalten..."}},
+        {"opt_backup_days_title", {"Daily backups", "Tägliche Backups"}},
+        {"opt_backup_days_ask", {"Besides the newest 20 backups of a game, the first backup of "
+                                 "each day is kept for this many days (0 = none):",
+                                 "Neben den neuesten 20 Backups eines Spiels wird das erste "
+                                 "Backup jedes Tages so viele Tage aufgehoben (0 = keine):"}},
         {"live_done", {"Save sent to the 3DS (checked)", "Spielstand an den 3DS gesendet (geprüft)"}},
         {"live_stopped", {"Sending to the 3DS while playing stopped: %1",
                           "Senden an den 3DS während des Spielens angehalten: %1"}},
