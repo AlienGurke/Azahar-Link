@@ -36,7 +36,9 @@ bool H264Encoder::Open(int width, int height, int fps, int bitrate) {
     }
     SEncParamExt p;
     impl->enc->GetDefaultParams(&p);
-    p.iUsageType = SCREEN_CONTENT_REAL_TIME; // menus, text: sharp edges, little motion
+    // camera mode: the screen-content mode makes a key frame at every bigger change
+    // (loading, fades, new menus), which floods the WiFi and stalls the picture
+    p.iUsageType = CAMERA_VIDEO_REAL_TIME;
     p.iPicWidth = width;
     p.iPicHeight = height;
     p.iTargetBitrate = bitrate;
@@ -50,7 +52,7 @@ bool H264Encoder::Open(int width, int height, int fps, int bitrate) {
     p.iMultipleThreadIdc = 1;
     p.iEntropyCodingModeFlag = 0; // CAVLC (baseline)
     p.bEnableDenoise = false;
-    p.bEnableBackgroundDetection = false; // not for screen content
+    p.bEnableBackgroundDetection = true;
     p.bEnableAdaptiveQuant = false;
     p.bEnableLongTermReference = false;
     p.bEnableSceneChangeDetect = false; // a fade or a new screen is no reason for a big key frame
