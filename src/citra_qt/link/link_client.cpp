@@ -1328,6 +1328,14 @@ void Client::VideoWorker() {
         if (!have_video_addr || !video_wanted || lid_closed) {
             continue;
         }
+        // statistics: how many frames apart the picture changes
+        if (got_frame && frame != last_frame) {
+            const uint64_t gap = emu_frame - h264_prev_emu_frame;
+            if (h264_prev_emu_frame != 0 && gap >= 1 && gap <= 6) {
+                stats_src_gaps[std::min<uint64_t>(gap, 4) - 1]++;
+            }
+            h264_prev_emu_frame = emu_frame;
+        }
 
         ProcessAcks();
 
@@ -1839,6 +1847,21 @@ void Client::VideoStats(int64_t now) {
                         h264_capable ? fmt::format(", {} key frames ({} asked for by the 3DS), target {} kbit/s",
                                                    stats_keys, stats_key_asks, h264_bitrate / 1000)
                                      : fmt::format(", rate {:.0f} KB/s", budget_bytes / 1024)));
+        if (!h264_capable) {
+            uint16_t st = 0;
+            std::vector<uint8_t> out;
+            if (TryRequest(LINK_CMD_VIDEOSTATS, nullptr, 0, st, &out) == 1 && st == LINK_OK &&
+                out.size() >= 80) {
+                uint32_t v[20];
+                std::memcpy(v, out.data(), sizeof(v));
+                Log(fmt::format("video: 3DS shown {} (by the safety net {}), stood 1/2/3/4+ "
+                                "refreshes {}/{}/{}/{}, 3DS loop too slow {}, made 1/2/3/4-6 "
+                                "frames apart in Azahar {}/{}/{}/{}",
+                                v[18], v[19], v[14], v[15], v[16], v[17], v[13],
+                                stats_src_gaps[0], stats_src_gaps[1], stats_src_gaps[2],
+                                stats_src_gaps[3]));
+            }
+        }
         if (h264_capable) {
             // what the 3DS saw (never waits for a busy connection)
             uint16_t st = 0;
@@ -2014,11 +2037,6 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         force = true;
     }
     if (frame != h264_last) {
-        const uint64_t gap = h264_emu_frame - h264_prev_emu_frame;
-        if (h264_prev_emu_frame != 0 && gap >= 1 && gap <= 6) {
-            stats_src_gaps[std::min<uint64_t>(gap, 4) - 1]++;
-        }
-        h264_prev_emu_frame = h264_emu_frame;
         h264_changed_ms = now_ms;
         h264_settled = false;
     }
