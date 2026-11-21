@@ -1159,6 +1159,8 @@ void Client::Worker(std::string host) {
                              Request(LINK_CMD_VIDEOCAPS, nullptr, 0, st, &caps) && st == LINK_OK &&
                              caps.size() >= 4 && (caps[0] & LINK_VIDCAP_H264);
             h264_capable = can;
+            h264_rs = can && (caps[0] & LINK_VIDCAP_H264_RS);
+            linkGfInit();
             video_resync = true;
             Log(std::string("video: ") + (can ? "H.264 (New 3DS hardware decoder)"
                                               : H264Encoder::Available()
@@ -1857,7 +1859,7 @@ void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) 
 // New 3DS: the bottom screen as H.264. Unchanged pictures are not sent; a lost
 // packet makes the next frame a key frame (the 3DS shows nothing broken meanwhile).
 void Client::SendH264(const std::vector<uint16_t>& frame) {
-    constexpr double kPaceBytesPerSec = 2.0e6;
+    constexpr double kPaceBytesPerSec = 1.2e6; // the 3DS WiFi loses less when it is spread
     if (frame.size() != static_cast<size_t>(kWidth * kHeight)) {
         return;
     }
@@ -1893,7 +1895,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         } else if (loss < 0.05) {
             rate += 250'000;
         }
-        rate = std::clamp(rate, 1'500'000, 6'000'000);
+        rate = std::clamp(rate, 1'500'000, 5'000'000);
         if (rate != h264_bitrate) {
             h264_bitrate = rate;
             h264.SetBitrate(rate);
@@ -1901,9 +1903,22 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         stat_received = stat_lost = 0;
     }
 
-    const bool force = h264_force_key.exchange(false);
+    bool force = h264_force_key.exchange(false);
+    const int64_t now_ms = NowMs();
     if (!force && frame == h264_last) {
-        return; // nothing new on the screen
+        // nothing new on the screen. Once it stood still for half a second, one key frame:
+        // whatever got lost on the way, the 3DS then shows exactly this picture
+        if (h264_settled || now_ms - h264_changed_ms < 500) {
+            return;
+        }
+        force = true;
+    }
+    if (frame != h264_last) {
+        h264_changed_ms = now_ms;
+        h264_settled = false;
+    }
+    if (force) {
+        h264_settled = true;
     }
     h264_last = frame;
     ToRotatedI420(frame, h264_yuv);
@@ -1927,17 +1942,28 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     size_t sent_bytes = 0;
     std::vector<uint8_t> pk;
     // repair packets: the XOR of every 1st/2nd data packet (see LinkProto.h)
-    // up to 4 groups: up to 4 packets lost in a row can be rebuilt (small frames: every
-    // packet has its own copy - they are small, the WiFi has room)
-    const size_t groups = std::min<size_t>(4, parts);
+    // Reed-Solomon parity: any `groups` lost packets of the frame can be rebuilt on the
+    // 3DS. About a third extra (small frames: as many as data packets) - the WiFi has room
+    const size_t groups = !h264_rs ? 0
+                          : parts <= 2
+                              ? parts
+                              : std::min<size_t>(8, std::max<size_t>(2, (parts + 2) / 3));
     const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
     std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
-    for (size_t i = 0; i < parts; i++) {
-        const size_t off = i * LINK_H264_PART;
-        const size_t len = std::min<size_t>(LINK_H264_PART, h264_out.size() - off);
-        uint8_t* par = &parity[(i % groups) * LINK_H264_PART];
-        for (size_t k = 0; k < len; k++) {
-            par[k] ^= h264_out[off + k];
+    for (size_t j = 0; j < groups; j++) {
+        uint8_t* par = &parity[j * LINK_H264_PART];
+        for (size_t i = 0; i < parts; i++) {
+            const uint8_t c = linkCauchy(static_cast<int>(j), static_cast<int>(i),
+                                         static_cast<int>(groups));
+            uint8_t tab[256];
+            for (int x = 0; x < 256; x++) {
+                tab[x] = linkGfMul(c, static_cast<uint8_t>(x));
+            }
+            const size_t off = i * LINK_H264_PART;
+            const size_t len = std::min<size_t>(LINK_H264_PART, h264_out.size() - off);
+            for (size_t k = 0; k < len; k++) {
+                par[k] ^= tab[h264_out[off + k]];
+            }
         }
     }
     for (size_t i = 0; i < parts + groups; i++) {

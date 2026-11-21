@@ -177,7 +177,10 @@ private:
     H264Encoder h264;
     std::atomic<bool> h264_capable{false}; // the 3DS decodes H.264, we can encode it
     std::atomic<bool> h264_force_key{false};
-    int h264_bitrate = 6'000'000;
+    bool h264_rs = false;           // the 3DS repairs with Reed-Solomon parity
+    int64_t h264_changed_ms = 0;    // when the picture last changed
+    bool h264_settled = true;       // a key frame went out since it stands still
+    int h264_bitrate = 5'000'000;
     std::vector<uint16_t> h264_last;
     std::vector<uint8_t> h264_yuv, h264_out;
     // statistics for the log (every 10 s)
