@@ -1805,9 +1805,16 @@ void Client::VideoStats(int64_t now) {
                 out.size() >= 16) {
                 uint32_t v[4];
                 std::memcpy(v, out.data(), sizeof(v));
+                std::string extra;
+                if (out.size() >= 24) {
+                    uint32_t w[2];
+                    std::memcpy(w, out.data() + 16, sizeof(w));
+                    extra = fmt::format(", decoder behind {}, socket buffer {} KB", w[0],
+                                        w[1] / 1024);
+                }
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
-                                "rebuilt packets {}, decoder errors {}",
-                                v[0], v[1], v[2], v[3]));
+                                "rebuilt packets {}, decoder errors {}{}",
+                                v[0], v[1], v[2], v[3], extra));
                 // pictures went out, but the 3DS showed none (e.g. an app that does not
                 // fit): twice in a row, and the picture comes as tiles again
                 if (v[0] == 0 && stats_frames >= 5) {
