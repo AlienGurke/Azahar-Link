@@ -2236,6 +2236,19 @@ void Client::CalibrateColors() {
     }
     std::vector<uint16_t> dec(W * H);
     std::memcpy(dec.data(), out.data() + 4, dec.size() * 2);
+    {
+        // for looking at it later: "LCP1", the picture sent (320x240 RGB565, rows top to
+        // bottom), the I420 made of it (240x320), the picture the 3DS shows (240x320
+        // RGB565), the colour matrix used
+        const std::string path = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
+                                 "3ds-link/colour-probe-" + std::to_string(calib_tries) + ".bin";
+        std::string blob = "LCP1";
+        blob.append(reinterpret_cast<const char*>(h264_last.data()), h264_last.size() * 2);
+        blob.append(reinterpret_cast<const char*>(h264_yuv.data()), W * H * 3 / 2);
+        blob.append(reinterpret_cast<const char*>(dec.data()), dec.size() * 2);
+        blob.append(reinterpret_cast<const char*>(color_matrix), sizeof(color_matrix));
+        FileUtil::WriteStringToFile(false, path, blob); // binary
+    }
     const uint8_t* Yp = h264_yuv.data();
     const uint8_t* Up = Yp + W * H;
     const uint8_t* Vp = Up + (W / 2) * (H / 2);
