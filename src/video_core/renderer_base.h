@@ -53,11 +53,14 @@ public:
 
     /// Renderer thread: hands over a picture, 4 bytes per pixel.
     /// bgra: bytes B,G,R,A (else R,G,B,A). bottom_up: the first row is the bottom one.
-    void Submit(const void* pixels, bool bgra, bool bottom_up);
+    /// frame: the emulated frame it shows (older ones than the newest handed over are ignored).
+    void Submit(const void* pixels, bool bgra, bool bottom_up, u64 frame);
 
     /// Client thread: waits up to `timeout` for a picture newer than `seq`. On success
     /// `rgb565` gets Width * Height pixels (rows top to bottom) and `seq` is updated.
-    bool Take(std::vector<u16>& rgb565, u64& seq, std::chrono::milliseconds timeout);
+    /// `frame` (if given) gets the emulated frame the picture shows.
+    bool Take(std::vector<u16>& rgb565, u64& seq, std::chrono::milliseconds timeout,
+              u64* frame = nullptr);
 
 private:
     std::atomic_bool enabled{false};
@@ -65,6 +68,7 @@ private:
     std::condition_variable cv;
     std::vector<u16> latest;
     u64 latest_seq = 0;
+    u64 latest_frame = 0;
 };
 
 LinkCapture& GetLinkCapture();

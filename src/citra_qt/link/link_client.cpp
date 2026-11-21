@@ -1316,8 +1316,12 @@ void Client::VideoWorker() {
     std::vector<uint16_t> frame;
     u64 frame_seq = 0;
     while (!stop_requested) {
-        const bool got_frame = VideoCore::GetLinkCapture().Take(frame, frame_seq,
-                                                                std::chrono::milliseconds(30));
+        u64 emu_frame = 0;
+        const bool got_frame = VideoCore::GetLinkCapture().Take(
+            frame, frame_seq, std::chrono::milliseconds(30), &emu_frame);
+        if (got_frame) {
+            h264_emu_frame = emu_frame;
+        }
         if (!have_video_addr || !video_wanted || lid_closed) {
             continue;
         }
@@ -1848,6 +1852,11 @@ void Client::VideoStats(int64_t now) {
                                          "waited {} ms on average",
                                          g[0], g[1], g[2], g[3]);
                 }
+                if (out.size() >= 56) {
+                    uint32_t slow;
+                    std::memcpy(&slow, out.data() + 52, sizeof(slow));
+                    extra += fmt::format(", 3DS loop too slow {}", slow);
+                }
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
                                 "rebuilt packets {}, decoder errors {}{}",
                                 v[0], v[1], v[2], v[3], extra));
@@ -1963,7 +1972,10 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
 
     bool force = h264_force_key.exchange(false);
     const int64_t now_ms = NowMs();
-    const int64_t frame_ms = now_ms;
+    // the emulated time of the picture (the 3DS refreshes 59.83 times a second): even
+    // when Azahar finishes or reads back a frame a bit earlier or later
+    const int64_t frame_ms = static_cast<int64_t>(static_cast<double>(h264_emu_frame) *
+                                                  (4481136.0 / 268111856.0) * 1000.0);
     if (!force && frame == h264_last) {
         // nothing new on the screen. Once it stood still for a quarter second, one key frame:
         // whatever got lost on the way, the 3DS then shows exactly this picture

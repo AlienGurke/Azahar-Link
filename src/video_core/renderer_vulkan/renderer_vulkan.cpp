@@ -2,6 +2,7 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <algorithm>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/memory_detect.h"
@@ -1214,16 +1215,23 @@ void RendererVulkan::RenderLinkCapture() {
 
     // hand over the pictures the GPU has finished meanwhile (never wait for it)
     const bool bgra = main_present_window.GetSurfaceFormat() != vk::Format::eR8G8B8A8Unorm;
-    for (auto& buf : link_buffers) {
-        if (buf.pending && scheduler.IsFree(buf.tick)) {
-            vmaInvalidateAllocation(instance.GetAllocator(), buf.allocation, 0, VK_WHOLE_SIZE);
-            capture.Submit(buf.mapped, bgra, false);
-            buf.pending = false;
+    // oldest first (link_slot is the next to be used, so the oldest)
+    for (u32 k = 0; k < link_buffers.size(); k++) {
+        auto& buf = link_buffers[(link_slot + k) % link_buffers.size()];
+        if (!buf.pending) {
+            continue;
         }
+        if (!scheduler.IsFree(buf.tick)) {
+            break; // keep the order
+        }
+        vmaInvalidateAllocation(instance.GetAllocator(), buf.allocation, 0, VK_WHOLE_SIZE);
+        capture.Submit(buf.mapped, bgra, false, buf.frame);
+        buf.pending = false;
     }
 
     if (!capture.IsEnabled()) {
-        if (link_frame.image && !link_buffers[0].pending && !link_buffers[1].pending) {
+        if (link_frame.image && std::none_of(link_buffers.begin(), link_buffers.end(),
+                                             [](const LinkBuffer& b) { return b.pending; })) {
             scheduler.Finish();
             ReleaseLinkCapture();
         }
@@ -1316,6 +1324,7 @@ void RendererVulkan::RenderLinkCapture() {
     });
 
     buf.tick = scheduler.CurrentTick();
+    buf.frame = current_frame;
     buf.pending = true;
     link_slot = (link_slot + 1) % link_buffers.size();
 }

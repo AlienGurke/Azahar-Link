@@ -99,8 +99,10 @@ private:
     // 3DS Link: bottom screen for the 3DS app, read back through two pixel buffers
     OGLFramebuffer link_framebuffer;
     GLuint link_renderbuffer = 0;
-    std::array<GLuint, 2> link_pbos{};
-    std::array<GLsync, 2> link_fences{};
+    // four: the GPU finishes a copy only a frame or two later, and every picture counts
+    std::array<GLuint, 4> link_pbos{};
+    std::array<GLsync, 4> link_fences{};
+    std::array<u64, 4> link_frames{}; // the emulated frame each shows
     u32 link_slot = 0;
     std::array<OGLSampler, 2> samplers;
 

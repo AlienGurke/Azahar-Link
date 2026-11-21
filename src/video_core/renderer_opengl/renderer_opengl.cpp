@@ -2,6 +2,7 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <algorithm>
 #include "common/logging/log.h"
 #include "common/microprofile.h"
 #include "common/settings.h"
@@ -209,26 +210,29 @@ void RendererOpenGL::RenderLinkCapture() {
     constexpr GLsizeiptr size = width * height * 4;
 
     // hand over the pictures the GPU has finished meanwhile (never wait for it)
-    for (u32 i = 0; i < link_fences.size(); i++) {
+    // oldest first (link_slot is the next to be used, so the oldest)
+    for (u32 k = 0; k < link_fences.size(); k++) {
+        const u32 i = (link_slot + k) % static_cast<u32>(link_fences.size());
         if (!link_fences[i]) {
             continue;
         }
         const GLenum result = glClientWaitSync(link_fences[i], 0, 0);
         if (result != GL_ALREADY_SIGNALED && result != GL_CONDITION_SATISFIED) {
-            continue;
+            break; // keep the order
         }
         glDeleteSync(link_fences[i]);
         link_fences[i] = nullptr;
         glBindBuffer(GL_PIXEL_PACK_BUFFER, link_pbos[i]);
         if (const void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, size, GL_MAP_READ_BIT)) {
-            capture.Submit(pixels, true, true);
+            capture.Submit(pixels, true, true, link_frames[i]);
             glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
         }
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     }
 
     if (!capture.IsEnabled()) {
-        if (link_renderbuffer && !link_fences[0] && !link_fences[1]) {
+        if (link_renderbuffer && std::none_of(link_fences.begin(), link_fences.end(),
+                                              [](GLsync f) { return f != nullptr; })) {
             ReleaseLinkCapture();
         }
         return;
@@ -263,6 +267,7 @@ void RendererOpenGL::RenderLinkCapture() {
     glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     link_fences[link_slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    link_frames[link_slot] = current_frame;
     link_slot = (link_slot + 1) % link_fences.size();
 
     state.draw.read_framebuffer = old_read_fb;

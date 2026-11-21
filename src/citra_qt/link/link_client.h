@@ -179,6 +179,7 @@ private:
     std::atomic<bool> h264_force_key{false};
     std::atomic<bool> h264_key_wanted{false}; // the 3DS asks for a key frame (input packets)
     int64_t h264_key_ms = 0;        // when the last key frame went out
+    uint64_t h264_emu_frame = 0;       // the emulated frame of the newest picture
     std::atomic<int64_t> busy_ms{0}; // last request other than polling (save transfers)
     bool h264_rs = false;           // the 3DS repairs with Reed-Solomon parity
     int h264_silent = 0;            // statistics in a row in which the 3DS showed nothing

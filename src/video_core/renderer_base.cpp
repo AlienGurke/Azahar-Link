@@ -32,7 +32,7 @@ Layout::FramebufferLayout LinkCapture::MakeLayout(const Layout::FramebufferLayou
     return layout;
 }
 
-void LinkCapture::Submit(const void* pixels, bool bgra, bool bottom_up) {
+void LinkCapture::Submit(const void* pixels, bool bgra, bool bottom_up, u64 frame) {
     const u8* src = static_cast<const u8*>(pixels);
     std::vector<u16> out(Width * Height);
     const u32 r_off = bgra ? 2 : 0;
@@ -47,19 +47,27 @@ void LinkCapture::Submit(const void* pixels, bool bgra, bool bottom_up) {
     }
     {
         std::scoped_lock lock{mutex};
+        if (frame < latest_frame && latest_frame - frame < 1000) {
+            return; // an older picture than the one handed over already
+        }
         latest = std::move(out);
         latest_seq++;
+        latest_frame = frame;
     }
     cv.notify_all();
 }
 
-bool LinkCapture::Take(std::vector<u16>& rgb565, u64& seq, std::chrono::milliseconds timeout) {
+bool LinkCapture::Take(std::vector<u16>& rgb565, u64& seq, std::chrono::milliseconds timeout,
+                       u64* frame) {
     std::unique_lock lock{mutex};
     if (!cv.wait_for(lock, timeout, [&] { return latest_seq != seq && !latest.empty(); })) {
         return false;
     }
     rgb565 = latest;
     seq = latest_seq;
+    if (frame) {
+        *frame = latest_frame;
+    }
     return true;
 }
 

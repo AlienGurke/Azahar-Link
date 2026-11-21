@@ -144,10 +144,12 @@ private:
         VmaAllocation allocation{};
         void* mapped{};
         u64 tick{};
+        u64 frame{}; // the emulated frame it shows
         bool pending{};
     };
     Frame link_frame{};
-    std::array<LinkBuffer, 2> link_buffers{};
+    // four: the GPU finishes a copy only a frame or two later, and every picture counts
+    std::array<LinkBuffer, 4> link_buffers{};
     u32 link_slot = 0;
     DescriptorHeap present_heap;
     vk::UniquePipelineLayout present_pipeline_layout;
