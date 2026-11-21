@@ -285,6 +285,10 @@ std::string Text(const char* key) {
                                  "each day is kept for this many days (0 = none):",
                                  "Neben den neuesten 20 Backups eines Spiels wird das erste "
                                  "Backup jedes Tages so viele Tage aufgehoben (0 = keine):"}},
+        {"opt_wifi_bg", {"Bottom screen behind everything else on the WiFi (fastest buttons; off: "
+                         "ahead of other devices' traffic; from the next connect)",
+                         "Unteres Bild im WLAN hinter allem anderen (schnellste Eingaben; aus: vor "
+                         "dem Verkehr anderer Geräte; ab dem nächsten Verbinden)"}},
         {"opt_h264", {"Bottom screen as H.264 on a New 3DS (smoother)",
                       "Unteres Bild als H.264 auf dem New 3DS (flüssiger)"}},
         {"live_done", {"Save sent to the 3DS (checked)", "Spielstand an den 3DS gesendet (geprüft)"}},
@@ -411,7 +415,7 @@ void Client::CloseSockets() {
 
 // Marks a UDP socket's packets to `to` with a WiFi priority class: "voice" (top) or
 // "video" (second; above the other devices' normal traffic, below the buttons). Returns "" or what went wrong.
-std::string Client::MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice) {
+std::string Client::MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice, bool background) {
     sockaddr_in to;
     std::memcpy(&to, to_sockaddr_in, sizeof(to));
 #ifdef _WIN32
@@ -426,14 +430,16 @@ std::string Client::MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voic
     QOS_FLOWID flow = 0;
     sockaddr_in dest = to;
     if (!QOSAddSocketToFlow(qos, static_cast<SOCKET>(sock), reinterpret_cast<PSOCKADDR>(&dest),
-                            voice ? QOSTrafficTypeVoice : QOSTrafficTypeAudioVideo,
+                            voice        ? QOSTrafficTypeVoice
+                            : background ? QOSTrafficTypeBackground
+                                         : QOSTrafficTypeAudioVideo,
                             QOS_NON_ADAPTIVE_FLOW, &flow)) {
         return fmt::format("{}", GetLastError());
     }
     return "";
 #else
     (void)to;
-    const int tos = voice ? 0xC0 : 0xA0;
+    const int tos = voice ? 0xC0 : background ? 0x20 : 0xA0;
     if (setsockopt(static_cast<sock_t>(sock), IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) != 0) {
         return fmt::format("{}", errno);
     }
@@ -1193,15 +1199,17 @@ void Client::Worker(std::string host) {
             have_video_addr = true;
             // WiFi priorities: the picture as "video" (above other devices' normal traffic),
             // the 3DS's buttons as "voice" above it; the echo for measuring as "voice" too
-            const std::string pic = MarkQos(static_cast<intptr_t>(us), &va, false);
+            const std::string pic = MarkQos(static_cast<intptr_t>(us), &va, false,
+                                            option_picture_background);
             const sock_t es = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
             std::string echo = "no socket";
             if (es != static_cast<sock_t>(-1)) {
-                echo = MarkQos(static_cast<intptr_t>(es), &va, true);
+                echo = MarkQos(static_cast<intptr_t>(es), &va, true, false);
                 std::scoped_lock lock{udp_mutex};
                 echo_sock = static_cast<intptr_t>(es);
             }
-            Log(fmt::format("WiFi priority: picture as video {}, echo as voice {}",
+            Log(fmt::format("WiFi priority: picture as {} {}, echo as voice {}",
+                            option_picture_background ? "background" : "video",
                             pic.empty() ? "ok" : "failed (" + pic + ")",
                             echo.empty() ? "ok" : "failed (" + echo + ")"));
         }
@@ -1922,7 +1930,8 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // (packed with LZ4, the same bytes on the air hold that much more)
     const size_t budget = static_cast<size_t>(
         bytes_per_sec * (tile_ts ? 1.0 / 30.0 : kMaxFrameSeconds) /
-        (tile_lz4 ? std::clamp(lz4_ratio, 0.35, 1.0) : 1.0));
+        (tile_lz4 ? std::clamp(lz4_ratio, 0.35, 1.0) : 1.0) /
+        (tile_rs ? 4.0 / 3.0 : 1.0)); // the parity goes out too (a third extra)
 
     auto content_changed = [&](int t) {
         const int base = TileBase(t);

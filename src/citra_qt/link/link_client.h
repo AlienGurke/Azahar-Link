@@ -90,6 +90,7 @@ public:
     std::atomic<bool> option_miis{true};       // take the Miis of the 3DS
     std::atomic<bool> option_system_data{true}; // take missing system data from the 3DS
     std::atomic<bool> option_h264{true};        // bottom screen as H.264 on a New 3DS
+    std::atomic<bool> option_picture_background{true}; // picture: WiFi class background (else video)
 
     /// Copies the Mii database (Mii Maker) of the 3DS into Azahar now. It also happens
     /// on every connect; Azahar's own database is kept once as CFL_DB.dat.before-3ds-link.
@@ -178,7 +179,8 @@ private:
     void VideoStats(int64_t now);
     void CalibrateColors();
     void LogRoundTrip(const std::vector<uint8_t>& out);
-    static std::string MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice);
+    static std::string MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice,
+                               bool background);
     H264Encoder h264;
     std::atomic<bool> h264_capable{false}; // the picture goes as H.264 now
     std::atomic<bool> h264_supported{false}; // the 3DS decodes H.264, we can encode it

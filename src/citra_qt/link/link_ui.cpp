@@ -204,6 +204,7 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
     add_option("opt_h264", "h264", [](bool on) { Get().option_h264 = on; });
+    add_option("opt_wifi_bg", "wifi_background", [](bool on) { Get().option_picture_background = on; });
     options->addSeparator();
     {
         // writing back is off until switched on on purpose
