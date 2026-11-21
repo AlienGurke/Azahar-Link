@@ -1229,6 +1229,7 @@ void Client::Worker(std::string host) {
             tile_rs = have_caps && (caps[0] & LINK_VIDCAP_TILE_RS);
             tile_ts = have_caps && (caps[0] & LINK_VIDCAP_TILE_TS);
             echo_ok = have_caps && (caps[0] & LINK_VIDCAP_ECHO);
+            tile_lz4 = have_caps && (caps[0] & LINK_VIDCAP_TILE_LZ4);
             if (have_caps && caps.size() >= 8) {
                 uint32_t tos;
                 std::memcpy(&tos, caps.data() + 4, 4);
@@ -1741,6 +1742,113 @@ int TileBase(int t) {
 
 } // namespace
 
+namespace {
+int TilePayload(unsigned type) {
+    switch (type) {
+    case LINK_TILE_RAW: return 128;
+    case LINK_TILE_SOLID_T: return 2;
+    case LINK_TILE_PAL2: return 12;
+    case LINK_TILE_PAL4: return 24;
+    case LINK_TILE_PAL16: return 64;
+    case LINK_TILE_HALF: return 32;
+    case LINK_TILE_QUARTER: return 8;
+    case LINK_TILE_META: return 4;
+    default: return -1;
+    }
+}
+} // namespace
+
+// Tiles packed with LZ4 (see LinkProto.h): each raw packet (up to about twice the size of a
+// packet) is packed; a packed packet that is still too big, or one that packing does not make
+// smaller, is split at its middle entry until every piece fits - packed or as it is.
+void Client::PackTilePackets(std::vector<std::vector<uint8_t>>& packets,
+                             std::vector<std::vector<uint16_t>>& packet_tiles) {
+    constexpr size_t H = sizeof(LinkFramePacket);
+    std::vector<std::vector<uint8_t>> out;
+    std::vector<std::vector<uint16_t>> out_tiles;
+    std::vector<char> lz(LZ4_compressBound(4096));
+    for (size_t p = 0; p < packets.size(); p++) {
+        const std::vector<uint8_t>& raw = packets[p];
+        // the entries: where each starts, and whether it is a tile (META is not)
+        struct Ent {
+            size_t off, len;
+            bool tile;
+        };
+        std::vector<Ent> ents;
+        for (size_t off = H; off + 2 <= raw.size();) {
+            uint16_t head;
+            std::memcpy(&head, &raw[off], 2);
+            const unsigned type = head >> LINK_TILE_TYPE_SHIFT;
+            const int sz = TilePayload(type);
+            if (sz < 0 || off + 2 + sz > raw.size()) {
+                break;
+            }
+            ents.push_back({off, static_cast<size_t>(2 + sz), type != LINK_TILE_META});
+            off += 2 + sz;
+        }
+        // tiles of this packet, in entry order
+        const std::vector<uint16_t>& tiles = packet_tiles[p];
+        std::vector<size_t> tile_index(ents.size());
+        for (size_t i = 0, t = 0; i < ents.size(); i++) {
+            tile_index[i] = t;
+            if (ents[i].tile) {
+                t++;
+            }
+        }
+        // entries [a, b) as one packet, split if needed
+        auto pack_range = [&](auto&& self, size_t a, size_t b) -> void {
+            if (a >= b) {
+                return;
+            }
+            const size_t from = ents[a].off, to = ents[b - 1].off + ents[b - 1].len;
+            const size_t rawlen = to - from;
+            const int c = LZ4_compress_default(reinterpret_cast<const char*>(&raw[from]), lz.data(),
+                                               static_cast<int>(rawlen), static_cast<int>(lz.size()));
+            std::vector<uint8_t> pk;
+            LinkFramePacket hdr = {};
+            hdr.entryCount = static_cast<uint16_t>(b - a);
+            if (c > 0 && static_cast<size_t>(c) + 2 < rawlen &&
+                H + 2 + static_cast<size_t>(c) <= LINK_FRAME_MAX_BYTES) {
+                hdr.magic = LINK_FRAMEZ_MAGIC;
+                pk.resize(H + 2 + c);
+                const uint16_t rl = static_cast<uint16_t>(rawlen);
+                std::memcpy(&pk[H], &rl, 2);
+                std::memcpy(&pk[H + 2], lz.data(), c);
+            } else if (H + rawlen <= LINK_FRAME_MAX_BYTES) {
+                hdr.magic = LINK_FRAME_MAGIC;
+                pk.resize(H + rawlen);
+                std::memcpy(&pk[H], &raw[from], rawlen);
+            } else {
+                const size_t mid = a + (b - a) / 2;
+                self(self, a, mid);
+                self(self, mid, b);
+                return;
+            }
+            std::memcpy(pk.data(), &hdr, H);
+            stats_cmp_raw += rawlen;
+            stats_cmp_lz4 += pk.size() - H;
+            const size_t t0 = tile_index[a];
+            const size_t t1 = b < ents.size() ? tile_index[b] : tiles.size();
+            out.push_back(std::move(pk));
+            out_tiles.emplace_back(tiles.begin() + t0, tiles.begin() + t1);
+        };
+        pack_range(pack_range, 0, ents.size());
+    }
+    // how well it packs: the next frames may then take that much more (see SendTiles)
+    size_t raw_sum = 0, packed_sum = 0;
+    for (const auto& pk : out) {
+        packed_sum += pk.size();
+    }
+    for (const auto& pk : packets) {
+        raw_sum += pk.size();
+    }
+    if (raw_sum > 4096) {
+        lz4_ratio = 0.8 * lz4_ratio + 0.2 * (static_cast<double>(packed_sum) / raw_sum);
+    }
+    packets = std::move(out);
+    packet_tiles = std::move(out_tiles);
+}
+
 void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // Rule: every tile whose content changed is sent in the same update, so the
     // 3DS never shows a mix of old and new. The data rate follows the WiFi (less when
@@ -1792,8 +1900,10 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     const double pace_bytes_per_sec = bytes_per_sec;
     // with the 3DS pacing by time stamps a frame must be out within one picture of a 30 fps
     // game (else it is late and the next one waits): bigger changes come as previews first
-    const size_t budget =
-        static_cast<size_t>(bytes_per_sec * (tile_ts ? 1.0 / 30.0 : kMaxFrameSeconds));
+    // (packed with LZ4, the same bytes on the air hold that much more)
+    const size_t budget = static_cast<size_t>(
+        bytes_per_sec * (tile_ts ? 1.0 / 30.0 : kMaxFrameSeconds) /
+        (tile_lz4 ? std::clamp(lz4_ratio, 0.35, 1.0) : 1.0));
 
     auto content_changed = [&](int t) {
         const int base = TileBase(t);
@@ -1904,12 +2014,17 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         cur_tiles.clear();
         cur_entries = 0;
     };
+    // with LZ4 the raw packets may be up to twice as big: each gets packed, and one that
+    // does not fit then is split in two halves that fit even unpacked
+    const size_t raw_limit = tile_lz4 ? 2 * (LINK_FRAME_MAX_BYTES - sizeof(LinkFramePacket)) - 2 +
+                                            sizeof(LinkFramePacket)
+                                      : LINK_FRAME_MAX_BYTES;
     auto add = [&](const EncTile& e) {
         const size_t need = 2 + e.size;
         if (cur.empty()) {
             cur.resize(sizeof(LinkFramePacket));
         }
-        if (cur.size() + need > LINK_FRAME_MAX_BYTES) {
+        if (cur.size() + need > raw_limit) {
             finish();
             cur.resize(sizeof(LinkFramePacket));
         }
@@ -1957,9 +2072,12 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     if (packets.empty()) {
         return;
     }
+    if (tile_lz4) {
+        PackTilePackets(packets, packet_tiles);
+    }
 
     // how much a lossless compression of each packet would save (only measured, for the log)
-    if (!must.empty()) {
+    if (!must.empty() && !tile_lz4) {
         std::vector<char> lz(LZ4_compressBound(LINK_FRAME_MAX_BYTES));
         for (const std::vector<uint8_t>& pk : packets) {
             const size_t n = pk.size() - sizeof(LinkFramePacket);
@@ -2130,7 +2248,12 @@ void Client::VideoStats(int64_t now) {
                                 stats_send_max_ms,
                                 stats_frames ? stats_encode_ms / stats_frames : 0.0));
             }
-            if (stats_cmp_raw > 0) {
+            if (stats_cmp_raw > 0 && tile_lz4) {
+                Log(fmt::format("video: tiles packed with LZ4 to {:.0f} % of their size ({} KB "
+                                "instead of {} KB)",
+                                100.0 * stats_cmp_lz4 / stats_cmp_raw, stats_cmp_lz4 / 1024,
+                                stats_cmp_raw / 1024));
+            } else if (stats_cmp_raw > 0) {
                 Log(fmt::format("video: tiles could be packed to LZ4 {:.0f} %, zstd-1 {:.0f} %, "
                                 "zstd-9 {:.0f} % of their size (each packet on its own, {} KB)",
                                 100.0 * stats_cmp_lz4 / stats_cmp_raw,
