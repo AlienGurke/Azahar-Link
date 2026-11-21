@@ -208,6 +208,7 @@ private:
     std::atomic<uint32_t> input_gaps{0}, input_count{0};
     uint32_t input_gaps_seen = 0, input_gaps_logged = 0;
     std::atomic<bool> input_squeeze{false};
+    std::atomic<bool> capture_dirty{false}; // the lid changed: update the capture
     double stats_send_ms = 0, stats_send_max_ms = 0; // tiles: time spent per frame
     uint64_t stats_skipped = 0;     // pictures of Azahar the sender had no time for
     int h264_silent = 0;            // statistics in a row in which the 3DS showed nothing

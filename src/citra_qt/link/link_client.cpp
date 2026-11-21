@@ -41,6 +41,7 @@ typedef int sock_t;
 #include "citra_qt/link/link_save.h"
 #include "citra_qt/link/lz4/lz4.h"
 #include "citra_qt/uisettings.h"
+#include "common/thread.h"
 #include "common/file_util.h"
 #include "core/hle/service/hid/hid.h"
 #include "video_core/renderer_base.h"
@@ -1202,6 +1203,87 @@ void Client::Worker(std::string host) {
         int64_t last_hello = 0;
         int64_t last_ping = NowMs();
         bool lost_by_lid = false;
+        // The buttons get their own thread at the highest priority: nothing else (requests
+        // to the 3DS that wait for its answer, saves going over) may hold them up even a
+        // moment - a packet goes to the emulated 3DS the instant it arrives.
+        std::atomic<bool> input_run{true};
+        std::thread input_thread([this, us, &input_run] {
+            Common::SetCurrentThreadName("3DS Link input");
+            Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+            while (input_run && !stop_requested) {
+                if (!WaitSock(us, 0, 20)) {
+                    continue;
+                }
+
+                LinkInputPacket pkt;
+                sockaddr_in from = {};
+                socklen_t flen = sizeof(from);
+                while (recvfrom(us, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+                                reinterpret_cast<sockaddr*>(&from), &flen) ==
+                       static_cast<int>(sizeof(pkt))) {
+                    if (pkt.magic != LINK_MAGIC) {
+                        continue;
+                    }
+                    bool closed_now = false;
+                    {
+                        std::scoped_lock lock{console_mutex};
+                        // drop reordered packets (with wrap-around)
+                        if (have_packet && static_cast<uint32_t>(pkt.id - last_packet_id) > 0x7FFFFFFFu) {
+                            continue;
+                        }
+                        have_packet = true;
+                        last_packet_id = pkt.id;
+                        console.known = true;
+                        const uint32_t bat = pkt.status & 0xFF;
+                        const uint32_t wifi = (pkt.status >> 8) & 0xFF;
+                        console.battery = bat <= 100 ? static_cast<int>(bat) : -1;
+                        console.wifi = wifi <= 3 ? static_cast<int>(wifi) : -1;
+                        console.charging = (pkt.status & LINK_STATUS_CHARGING) != 0;
+                        console.lid_closed = (pkt.status & LINK_STATUS_LIDCLOSED) != 0;
+                        closed_now = console.lid_closed;
+                    }
+                    if (closed_now != lid_closed.load()) {
+                        lid_closed = closed_now;
+                        capture_dirty = true; // the connection thread updates the capture
+                    }
+
+                    {
+                        // the 3DS sends at least every 50 ms: longer gaps mean its packets get
+                        // stuck on the WiFi - the picture then has to make room (see VideoWorker)
+                        const int64_t in_ms = NowMs();
+                        const int64_t gap = last_input_ms ? in_ms - last_input_ms : 0;
+                        last_input_ms = in_ms;
+                        if (gap > input_gap_max) {
+                            input_gap_max = gap;
+                        }
+                        if (gap > 100) {
+                            input_gaps++;
+                        }
+                        input_count++;
+                    }
+                    Service::HID::ArticBaseController::ControllerData data{};
+                    data.index = pkt.id;
+                    data.pad = pkt.keys;
+                    data.c_pad_x = pkt.cpadX;
+                    data.c_pad_y = pkt.cpadY;
+                    data.touch_x = pkt.touchX;
+                    data.touch_y = pkt.touchY;
+                    data.c_stick_x = pkt.cstickX;
+                    data.c_stick_y = pkt.cstickY;
+                    Service::HID::LinkController::Set(data);
+
+                    if (pkt.flags & LINK_INPUT_VIDEOACK) {
+                        std::scoped_lock vlock{video_mutex};
+                        ack_seq = pkt.videoAckSeq;
+                        ack_mask = pkt.videoAckMask;
+                        ack_new = true;
+                    }
+                    if (pkt.flags & LINK_INPUT_NEEDKEY) {
+                        h264_key_wanted = true;
+                    }
+                }
+            }
+        });
         while (!stop_requested) {
             const int64_t t = NowMs();
             if (t - last_hello >= 1000) {
@@ -1239,78 +1321,13 @@ void Client::Worker(std::string host) {
                 }
             }
 
-            if (!WaitSock(us, 0, 50)) {
-                continue;
+            if (capture_dirty.exchange(false)) {
+                UpdateCapture();
             }
-
-            LinkInputPacket pkt;
-            sockaddr_in from = {};
-            socklen_t flen = sizeof(from);
-            while (recvfrom(us, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
-                            reinterpret_cast<sockaddr*>(&from), &flen) ==
-                   static_cast<int>(sizeof(pkt))) {
-                if (pkt.magic != LINK_MAGIC) {
-                    continue;
-                }
-                bool closed_now = false;
-                {
-                    std::scoped_lock lock{console_mutex};
-                    // drop reordered packets (with wrap-around)
-                    if (have_packet && static_cast<uint32_t>(pkt.id - last_packet_id) > 0x7FFFFFFFu) {
-                        continue;
-                    }
-                    have_packet = true;
-                    last_packet_id = pkt.id;
-                    console.known = true;
-                    const uint32_t bat = pkt.status & 0xFF;
-                    const uint32_t wifi = (pkt.status >> 8) & 0xFF;
-                    console.battery = bat <= 100 ? static_cast<int>(bat) : -1;
-                    console.wifi = wifi <= 3 ? static_cast<int>(wifi) : -1;
-                    console.charging = (pkt.status & LINK_STATUS_CHARGING) != 0;
-                    console.lid_closed = (pkt.status & LINK_STATUS_LIDCLOSED) != 0;
-                    closed_now = console.lid_closed;
-                }
-                if (closed_now != lid_closed.load()) {
-                    lid_closed = closed_now;
-                    UpdateCapture();
-                }
-
-                {
-                    // the 3DS sends at least every 50 ms: longer gaps mean its packets get
-                    // stuck on the WiFi - the picture then has to make room (see VideoWorker)
-                    const int64_t in_ms = NowMs();
-                    const int64_t gap = last_input_ms ? in_ms - last_input_ms : 0;
-                    last_input_ms = in_ms;
-                    if (gap > input_gap_max) {
-                        input_gap_max = gap;
-                    }
-                    if (gap > 100) {
-                        input_gaps++;
-                    }
-                    input_count++;
-                }
-                Service::HID::ArticBaseController::ControllerData data{};
-                data.index = pkt.id;
-                data.pad = pkt.keys;
-                data.c_pad_x = pkt.cpadX;
-                data.c_pad_y = pkt.cpadY;
-                data.touch_x = pkt.touchX;
-                data.touch_y = pkt.touchY;
-                data.c_stick_x = pkt.cstickX;
-                data.c_stick_y = pkt.cstickY;
-                Service::HID::LinkController::Set(data);
-
-                if (pkt.flags & LINK_INPUT_VIDEOACK) {
-                    std::scoped_lock vlock{video_mutex};
-                    ack_seq = pkt.videoAckSeq;
-                    ack_mask = pkt.videoAckMask;
-                    ack_new = true;
-                }
-                if (pkt.flags & LINK_INPUT_NEEDKEY) {
-                    h264_key_wanted = true;
-                }
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+        input_run = false;
+        input_thread.join();
 
         have_video_addr = false;
         CloseSockets();
