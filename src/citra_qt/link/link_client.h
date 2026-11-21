@@ -182,12 +182,15 @@ private:
     std::atomic<bool> h264_force_key{false};
     std::atomic<bool> h264_key_wanted{false}; // the 3DS asks for a key frame (input packets)
     int64_t h264_key_ms = 0;        // when the last key frame went out
-    // R, G, B -> Y, U, V for the encoder; corrected once the 3DS showed how its decoder
-    // turns them back (CalibrateColors)
-    float color_matrix[3][4] = {{0.299f, 0.587f, 0.114f, 0.0f},
-                                {-0.168736f, -0.331264f, 0.5f, 128.0f},
-                                {0.5f, -0.418688f, -0.081312f, 128.0f}};
-    int calib_state = 0;            // 0 measure, 1 check the correction, 2 done
+    // R, G, B -> Y, U, V for the encoder: BT.601 TV range (Y 16..235, U/V 16..240) - the
+    // 3DS decoder turns it back with 1.164 (Y - 16) + 1.596 (V - 128) ... (measured: with
+    // full range everything came out ~16 % brighter, the light parts cut off)
+    float color_matrix[3][4] = {{0.256788f, 0.504129f, 0.097906f, 16.0f},
+                                {-0.148223f, -0.290993f, 0.439216f, 128.0f},
+                                {0.439216f, -0.367788f, -0.071427f, 128.0f}};
+    // 0 measure and correct, 1 only check (log the difference), 2 done. Starts at 1: the
+    // conversion is known now; the check stays for the log
+    int calib_state = 1;
     int calib_tries = 0;
     int64_t calib_last_ms = 0;
     uint32_t h264_last_made = 0;    // the time stamp of the newest picture sent

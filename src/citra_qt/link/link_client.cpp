@@ -1937,7 +1937,7 @@ void Client::VideoStats(int64_t now) {
 namespace {
 // the picture turned for the 3DS framebuffer (coded column c, row r = screen x r,
 // y 239 - c) as I420. `m` turns R, G, B (0..255) into Y, U, V: row i = coefficients for
-// R, G, B and the constant (BT.601 full range unless the 3DS showed it needs others)
+// R, G, B and the constant (BT.601 TV range, see color_matrix)
 void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv,
                    const float (&m)[3][4]) {
     constexpr int W = LINK_H264_WIDTH, H = LINK_H264_HEIGHT;
@@ -2241,7 +2241,7 @@ void Client::CalibrateColors() {
         // bottom), the I420 made of it (240x320), the picture the 3DS shows (240x320
         // RGB565), the colour matrix used
         const std::string path = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
-                                 "3ds-link/colour-probe-" + std::to_string(calib_tries) + ".bin";
+                                 "3ds-link/colour-probe.bin";
         std::string blob = "LCP1";
         blob.append(reinterpret_cast<const char*>(h264_last.data()), h264_last.size() * 2);
         blob.append(reinterpret_cast<const char*>(h264_yuv.data()), W * H * 3 / 2);
