@@ -2250,12 +2250,13 @@ void Client::CalibrateColors() {
     long n = 0;
     for (int r = 2; r + 3 < H; r += 2) {
         for (int c = 2; c + 3 < W; c += 2) {
-            // plain area: the 2x2 block and the pixels around it are all the same colour
-            const uint16_t p0 = src(r, c);
+            // where the colour (U, V) hardly changes around this 2x2 block (brightness may):
+            // the decoder's smoothing of the half-resolution colour does not matter there
+            const int bi = (r / 2) * (W / 2) + c / 2;
             bool flat = true;
-            for (int dy = -1; dy <= 2 && flat; dy++) {
-                for (int dx = -1; dx <= 2 && flat; dx++) {
-                    flat = src(r + dy, c + dx) == p0;
+            for (const int nb : {bi - 1, bi + 1, bi - W / 2, bi + W / 2}) {
+                if (std::abs(Up[nb] - Up[bi]) > 2 || std::abs(Vp[nb] - Vp[bi]) > 2) {
+                    flat = false;
                 }
             }
             if (!flat) {
@@ -2281,7 +2282,7 @@ void Client::CalibrateColors() {
                             xty[ch][i] += x[i] * rgb[ch];
                         }
                         yty[ch] += static_cast<double>(rgb[ch]) * rgb[ch];
-                        err[ch] += std::abs(rgb[ch] - expand(p0, ch));
+                        err[ch] += std::abs(rgb[ch] - expand(src(r + dy, c + dx), ch));
                     }
                     su += u;
                     suu += u * u;
@@ -2293,7 +2294,7 @@ void Client::CalibrateColors() {
         }
     }
     if (n < 2000) {
-        Log(fmt::format("video: colours - too few plain areas on the screen ({}), later", n));
+        Log(fmt::format("video: colours - too few areas of even colour on the screen ({}), later", n));
         return;
     }
     Log(fmt::format("video: colours - average difference shown vs sent: R {:.1f}, G {:.1f}, "
