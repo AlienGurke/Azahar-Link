@@ -1857,6 +1857,15 @@ void Client::VideoStats(int64_t now) {
                     std::memcpy(&slow, out.data() + 52, sizeof(slow));
                     extra += fmt::format(", 3DS loop too slow {}", slow);
                 }
+                if (out.size() >= 72) {
+                    uint32_t q[4];
+                    std::memcpy(q, out.data() + 56, sizeof(q));
+                    extra += fmt::format(", stood 1/2/3/4+ refreshes on the 3DS {}/{}/{}/{}", q[0],
+                                         q[1], q[2], q[3]);
+                }
+                extra += fmt::format(", made 1/2/3/4-6 frames apart in Azahar {}/{}/{}/{}",
+                                     stats_src_gaps[0], stats_src_gaps[1], stats_src_gaps[2],
+                                     stats_src_gaps[3]);
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
                                 "rebuilt packets {}, decoder errors {}{}",
                                 v[0], v[1], v[2], v[3], extra));
@@ -1875,6 +1884,7 @@ void Client::VideoStats(int64_t now) {
         }
     }
     stats_since = now;
+    std::fill(std::begin(stats_src_gaps), std::end(stats_src_gaps), 0u);
     stats_frames = stats_bytes = stats_keys = stats_key_asks = stats_received = stats_lost = 0;
 }
 
@@ -1986,6 +1996,11 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         force = true;
     }
     if (frame != h264_last) {
+        const uint64_t gap = h264_emu_frame - h264_prev_emu_frame;
+        if (h264_prev_emu_frame != 0 && gap >= 1 && gap <= 6) {
+            stats_src_gaps[std::min<uint64_t>(gap, 4) - 1]++;
+        }
+        h264_prev_emu_frame = h264_emu_frame;
         h264_changed_ms = now_ms;
         h264_settled = false;
     }
