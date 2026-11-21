@@ -410,7 +410,7 @@ void Client::CloseSockets() {
 }
 
 // Marks a UDP socket's packets to `to` with a WiFi priority class: "voice" (top) or
-// "background" (bottom). Returns "" or what went wrong.
+// "video" (second; above the other devices' normal traffic, below the buttons). Returns "" or what went wrong.
 std::string Client::MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice) {
     sockaddr_in to;
     std::memcpy(&to, to_sockaddr_in, sizeof(to));
@@ -426,14 +426,14 @@ std::string Client::MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voic
     QOS_FLOWID flow = 0;
     sockaddr_in dest = to;
     if (!QOSAddSocketToFlow(qos, static_cast<SOCKET>(sock), reinterpret_cast<PSOCKADDR>(&dest),
-                            voice ? QOSTrafficTypeVoice : QOSTrafficTypeBackground,
+                            voice ? QOSTrafficTypeVoice : QOSTrafficTypeAudioVideo,
                             QOS_NON_ADAPTIVE_FLOW, &flow)) {
         return fmt::format("{}", GetLastError());
     }
     return "";
 #else
     (void)to;
-    const int tos = voice ? 0xC0 : 0x20;
+    const int tos = voice ? 0xC0 : 0xA0;
     if (setsockopt(static_cast<sock_t>(sock), IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) != 0) {
         return fmt::format("{}", errno);
     }
@@ -1191,8 +1191,8 @@ void Client::Worker(std::string host) {
             std::memcpy(video_addr, &va, sizeof(va));
             video_resync = true;
             have_video_addr = true;
-            // WiFi priorities: the picture as "background", so the 3DS's buttons (marked
-            // "voice" on the 3DS) get the air first; the echo for measuring as "voice" too
+            // WiFi priorities: the picture as "video" (above other devices' normal traffic),
+            // the 3DS's buttons as "voice" above it; the echo for measuring as "voice" too
             const std::string pic = MarkQos(static_cast<intptr_t>(us), &va, false);
             const sock_t es = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
             std::string echo = "no socket";
@@ -1201,7 +1201,7 @@ void Client::Worker(std::string host) {
                 std::scoped_lock lock{udp_mutex};
                 echo_sock = static_cast<intptr_t>(es);
             }
-            Log(fmt::format("WiFi priority: picture as background {}, echo as voice {}",
+            Log(fmt::format("WiFi priority: picture as video {}, echo as voice {}",
                             pic.empty() ? "ok" : "failed (" + pic + ")",
                             echo.empty() ? "ok" : "failed (" + echo + ")"));
         }
@@ -1524,7 +1524,9 @@ void Client::VideoWorker() {
                     break;
                 }
             }
-            if (pending) {
+            // at most ~30 a second: the data rate per frame assumes a 30 fps picture (60 of
+            // these went out once everything counted as lost, at 3 times the rate)
+            if (pending && NowMs() - tiles_sent_ms >= 30) {
                 SendTiles(last_frame);
             }
         }
@@ -1584,11 +1586,26 @@ void Client::ProcessAcks() {
             }
             stat_lost++;
             stats_lost++;
+            watch_lost++;
         } else {
             stat_received++;
             stats_received++;
+            watch_received++;
         }
         in_flight.pop_front();
+    }
+
+    // Receipts stuck (the test: 100 % "lost" for a minute while the 3DS got and rebuilt
+    // packets, so everything went out again and again): start over with a full picture
+    if (watch_received + watch_lost >= 200) {
+        if (watch_lost * 10 >= (watch_received + watch_lost) * 9) {
+            Log(fmt::format("video: {} of {} packets counted as lost (newest receipt {}, newest "
+                            "sent {}) - starting over",
+                            watch_lost, watch_received + watch_lost, a_seq, video_seq - 1));
+            video_resync = true;
+            h264_force_key = true;
+        }
+        watch_received = watch_lost = 0;
     }
 
     // never let the list grow without bound
@@ -1897,10 +1914,9 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         budget_bytes = std::max(kMinRate, budget_bytes * 0.7);
     }
     const double bytes_per_sec = budget_bytes;
-    // Sending is paced (no bursts for the 3DS WiFi), but a frame should be out quickly: the
-    // longer it takes, the longer the 3DS has to hold every picture back to show them evenly
-    // (the log: ~10 ms per frame, ~20 ms held back). The buttons have the WiFi priority now.
-    const double pace_bytes_per_sec = std::max(bytes_per_sec, 5.0e6);
+    // sending is paced at the data rate (no bursts for the 3DS WiFi; faster pacing went
+    // with the picture stopping in a test)
+    const double pace_bytes_per_sec = bytes_per_sec;
     // with the 3DS pacing by time stamps a frame must be out within one picture of a 30 fps
     // game (else it is late and the next one waits): bigger changes come as previews first
     // (packed with LZ4, the same bytes on the air hold that much more)
@@ -1994,6 +2010,7 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         return;
     }
     const auto send_t0 = std::chrono::steady_clock::now();
+    tiles_sent_ms = NowMs();
     stats_encode_ms +=
         std::chrono::duration<double, std::milli>(send_t0 - encode_t0).count();
 

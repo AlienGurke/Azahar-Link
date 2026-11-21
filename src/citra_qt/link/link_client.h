@@ -208,6 +208,8 @@ private:
     std::atomic<bool> echo_ok{false}; // the 3DS measures the input round trip
     bool tile_lz4 = false;            // tiles: the 3DS unpacks LZ4 packets
     double lz4_ratio = 0.65;          // tiles: packed size / raw size, recently
+    int64_t tiles_sent_ms = 0;        // tiles: when the last frame went out
+    uint64_t watch_received = 0, watch_lost = 0; // for spotting stuck receipts
     intptr_t echo_sock = -1;          // the echo goes out with the top WiFi priority
     size_t stats_cmp_raw = 0, stats_cmp_lz4 = 0, stats_cmp_zstd1 = 0, stats_cmp_zstd9 = 0;
     uint32_t tile_last_made = 0;    // tiles: the time stamp of the last changed picture
