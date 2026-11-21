@@ -1796,6 +1796,12 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         if (made_ms == 0) {
             made_ms = 1;
         }
+        // nothing changed (only sharper previews, refreshes): the time of the picture it
+        // belongs to - the 3DS then does not count it as a new picture in its pacing
+        if (must.empty() && tile_last_made != 0) {
+            made_ms = tile_last_made;
+        }
+        tile_last_made = made_ms;
         cur.resize(sizeof(LinkFramePacket) + 6);
         const uint16_t head = static_cast<uint16_t>(LINK_TILE_META << LINK_TILE_TYPE_SHIFT);
         std::memcpy(&cur[sizeof(LinkFramePacket)], &head, 2);
