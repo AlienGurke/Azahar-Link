@@ -199,6 +199,10 @@ private:
     uint32_t stats_src_gaps[4] = {}; // frames between changed pictures (1, 2, 3, 4-6)       // the emulated frame of the newest picture
     std::atomic<int64_t> busy_ms{0}; // last request other than polling (save transfers)
     bool h264_rs = false;           // the 3DS repairs with Reed-Solomon parity
+    bool tile_rs = false;           // tiles: the 3DS repairs with parity too
+    bool tile_ts = false;           // tiles: the 3DS paces them by their time stamps
+    double stats_send_ms = 0, stats_send_max_ms = 0; // tiles: time spent per frame
+    uint64_t stats_skipped = 0;     // pictures of Azahar the sender had no time for
     int h264_silent = 0;            // statistics in a row in which the 3DS showed nothing
     int64_t h264_changed_ms = 0;    // when the picture last changed
     bool h264_settled = true;       // a key frame went out since it stands still
@@ -270,6 +274,7 @@ private:
         std::vector<uint16_t> tiles;
         bool h264 = false;
         bool parity = false; // H.264 repair packet: losing it breaks nothing
+        bool fec = false;    // tiles with parity after the frame (may still be rebuilt)
         uint32_t frame_end = 0; // H.264: seq of the frame's last packet (parity included)
     };
     std::deque<SentPacket> in_flight;

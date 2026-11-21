@@ -1163,9 +1163,12 @@ void Client::Worker(std::string host) {
             // the bottom screen: H.264 if the 3DS has the hardware decoder (New 3DS)
             uint16_t st = 0;
             std::vector<uint8_t> caps;
-            const bool supported = H264Encoder::Available() &&
-                                   Request(LINK_CMD_VIDEOCAPS, nullptr, 0, st, &caps) &&
-                                   st == LINK_OK && caps.size() >= 4 && (caps[0] & LINK_VIDCAP_H264);
+            const bool have_caps = Request(LINK_CMD_VIDEOCAPS, nullptr, 0, st, &caps) &&
+                                   st == LINK_OK && caps.size() >= 4;
+            const bool supported =
+                H264Encoder::Available() && have_caps && (caps[0] & LINK_VIDCAP_H264);
+            tile_rs = have_caps && (caps[0] & LINK_VIDCAP_TILE_RS);
+            tile_ts = have_caps && (caps[0] & LINK_VIDCAP_TILE_TS);
             const bool can = supported && option_h264;
             h264_supported = supported;
             h264_failed = false;
@@ -1320,8 +1323,12 @@ void Client::VideoWorker() {
     u64 frame_seq = 0;
     while (!stop_requested) {
         u64 emu_frame = 0;
+        const u64 prev_seq = frame_seq;
         const bool got_frame = VideoCore::GetLinkCapture().Take(
             frame, frame_seq, std::chrono::milliseconds(30), &emu_frame);
+        if (got_frame && prev_seq != 0 && frame_seq > prev_seq + 1 && frame_seq - prev_seq < 100) {
+            stats_skipped += frame_seq - prev_seq - 1; // came while the last one went out
+        }
         if (got_frame) {
             h264_emu_frame = emu_frame;
         }
@@ -1419,7 +1426,7 @@ void Client::ProcessAcks() {
             const int32_t d = static_cast<int32_t>(a_seq - p.seq);
             if (d >= 0) {
                 received = d < 64 && ((a_mask >> d) & 1);
-                if (p.h264) {
+                if (p.h264 || p.fec) {
                     // the 3DS may still rebuild it from the parity at the end of its frame:
                     // only lost once packets after the whole frame were confirmed
                     lost = !received && static_cast<int32_t>(a_seq - p.frame_end) >= 2;
@@ -1431,7 +1438,7 @@ void Client::ProcessAcks() {
         // no receipt in time (e.g. it was the last packet before a pause). The 3DS WiFi
         // sometimes holds its packets back a while: H.264 waits longer, since a wrong
         // "lost" costs a key frame there
-        if (!received && now - p.sent_ms > (p.h264 ? 400 : 150)) {
+        if (!received && now - p.sent_ms > (p.h264 ? 400 : p.fec ? 250 : 150)) {
             lost = true;
         }
         if (!received && !lost) {
@@ -1736,6 +1743,7 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     if (must.empty() && extra.empty()) {
         return;
     }
+    const auto send_t0 = std::chrono::steady_clock::now();
 
     // 3) pack: mandatory tiles first, then the extras
     std::vector<std::vector<uint8_t>> packets;
@@ -1780,6 +1788,20 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         }
         tile_level[e.t] = e.level;
     };
+    if (tile_ts) {
+        // when the picture was made: the 3DS shows them as evenly paced as they were made
+        uint32_t made_ms = static_cast<uint32_t>(static_cast<double>(h264_emu_frame) *
+                                                 (4481136.0 / 268111856.0) * 1000.0) &
+                           0x7FFFFFFFu;
+        if (made_ms == 0) {
+            made_ms = 1;
+        }
+        cur.resize(sizeof(LinkFramePacket) + 6);
+        const uint16_t head = static_cast<uint16_t>(LINK_TILE_META << LINK_TILE_TYPE_SHIFT);
+        std::memcpy(&cur[sizeof(LinkFramePacket)], &head, 2);
+        std::memcpy(&cur[sizeof(LinkFramePacket) + 2], &made_ms, 4);
+        cur_entries = 1;
+    }
     for (const EncTile& e : must) {
         add(e);
     }
@@ -1797,9 +1819,16 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     sockaddr_in to;
     std::memcpy(&to, video_addr, sizeof(to));
     const uint32_t frame_id = ++video_frame_id;
-    const auto t0 = std::chrono::steady_clock::now();
-    size_t sent_bytes = 0;
-    for (size_t i = 0; i < packets.size(); i++) {
+    const size_t k = packets.size();
+    // Reed-Solomon parity (see LinkProto.h): about half extra, at least 2, at most 15
+    const bool busy = NowMs() - busy_ms < 1000;
+    const size_t groups =
+        !tile_rs || k > LINK_TILE_MAX_PACKETS
+            ? 0
+            : std::min<size_t>(LINK_TILE_MAX_PARITY,
+                               std::max<size_t>(2, busy ? k : (k + 1) / 2));
+    const uint32_t first_seq = video_seq;
+    for (size_t i = 0; i < k; i++) {
         std::vector<uint8_t>& pk = packets[i];
         LinkFramePacket hdr;
         std::memcpy(&hdr, pk.data(), sizeof(hdr));
@@ -1807,19 +1836,62 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         hdr.seq = video_seq++;
         hdr.baseSeq = base_seq;
         hdr.flags = static_cast<uint16_t>((i << LINK_FRAME_INDEX_SHIFT) |
-                                          (i + 1 == packets.size() ? LINK_FRAME_LAST : 0));
+                                          (i + 1 == k ? LINK_FRAME_LAST : 0));
         std::memcpy(pk.data(), &hdr, sizeof(hdr));
+    }
+    std::vector<uint8_t> parity(groups * LINK_FRAME_MAX_BYTES, 0);
+    for (size_t j = 0; j < groups; j++) {
+        uint8_t* par = &parity[j * LINK_FRAME_MAX_BYTES];
+        for (size_t i = 0; i < k; i++) {
+            const uint8_t c = linkCauchy(static_cast<int>(j), static_cast<int>(i),
+                                         static_cast<int>(groups));
+            uint8_t tab[256];
+            for (int x = 0; x < 256; x++) {
+                tab[x] = linkGfMul(c, static_cast<uint8_t>(x));
+            }
+            const std::vector<uint8_t>& pk = packets[i];
+            for (size_t b = 0; b < pk.size(); b++) {
+                par[b] ^= tab[pk[b]];
+            }
+        }
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    size_t sent_bytes = 0;
+    std::vector<uint8_t> ppk;
+    for (size_t i = 0; i < k + groups; i++) {
+        const bool is_parity = i >= k;
+        const std::vector<uint8_t>* out = &packets[std::min(i, k - 1)];
+        if (is_parity) {
+            LinkFramePacket hdr = {};
+            hdr.magic = LINK_TILEPAR_MAGIC;
+            hdr.frameId = frame_id;
+            hdr.seq = first_seq;
+            hdr.baseSeq = static_cast<uint32_t>((k << 8) | (groups << 4) | (i - k));
+            ppk.resize(sizeof(hdr) + LINK_FRAME_MAX_BYTES);
+            std::memcpy(ppk.data(), &hdr, sizeof(hdr));
+            std::memcpy(ppk.data() + sizeof(hdr), &parity[(i - k) * LINK_FRAME_MAX_BYTES],
+                        LINK_FRAME_MAX_BYTES);
+            out = &ppk;
+        }
         {
             // own lock: requests must not hold up the picture
             std::scoped_lock lock{udp_mutex};
             if (udp_sock == -1) {
                 return;
             }
-            sendto(static_cast<sock_t>(udp_sock), reinterpret_cast<const char*>(pk.data()),
-                   static_cast<int>(pk.size()), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+            sendto(static_cast<sock_t>(udp_sock), reinterpret_cast<const char*>(out->data()),
+                   static_cast<int>(out->size()), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
         }
-        in_flight.push_back({hdr.seq, NowMs(), std::move(packet_tiles[i])});
-        sent_bytes += pk.size();
+        if (!is_parity) {
+            SentPacket sp;
+            sp.seq = first_seq + static_cast<uint32_t>(i);
+            sp.sent_ms = NowMs();
+            sp.tiles = std::move(packet_tiles[i]);
+            sp.fec = groups > 0;
+            sp.frame_end = first_seq + static_cast<uint32_t>(k - 1);
+            in_flight.push_back(std::move(sp));
+        }
+        sent_bytes += out->size();
 
         // pacing, so the 3DS WiFi does not get the whole frame as one burst
         const auto due = t0 + std::chrono::microseconds(
@@ -1828,6 +1900,11 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
             std::this_thread::yield();
         }
     }
+    const double took_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - send_t0)
+            .count();
+    stats_send_ms += took_ms;
+    stats_send_max_ms = std::max(stats_send_max_ms, took_ms);
     stats_frames++;
     stats_bytes += sent_bytes;
 }
@@ -1858,14 +1935,18 @@ void Client::VideoStats(int64_t now) {
             std::vector<uint8_t> out;
             if (TryRequest(LINK_CMD_VIDEOSTATS, nullptr, 0, st, &out) == 1 && st == LINK_OK &&
                 out.size() >= 80) {
-                uint32_t v[20];
-                std::memcpy(v, out.data(), sizeof(v));
-                Log(fmt::format("video: 3DS shown {} (by the safety net {}), stood 1/2/3/4+ "
+                uint32_t v[21] = {};
+                std::memcpy(v, out.data(), std::min(out.size(), sizeof(v)));
+                Log(fmt::format("video: 3DS shown {} (by the safety net {}), rebuilt packets {}, "
+                                "shown late {}, uneven {}, waited {} ms on average, stood 1/2/3/4+ "
                                 "refreshes {}/{}/{}/{}, 3DS loop too slow {}, made 1/2/3/4-6 "
-                                "frames apart in Azahar {}/{}/{}/{}",
-                                v[18], v[19], v[14], v[15], v[16], v[17], v[13],
-                                stats_src_gaps[0], stats_src_gaps[1], stats_src_gaps[2],
-                                stats_src_gaps[3]));
+                                "frames apart in Azahar {}/{}/{}/{}, Azahar pictures skipped {}, "
+                                "sending took {:.1f} ms on average ({:.1f} at most)",
+                                v[18], v[19], v[20], v[10], v[11], v[12], v[14], v[15], v[16],
+                                v[17], v[13], stats_src_gaps[0], stats_src_gaps[1],
+                                stats_src_gaps[2], stats_src_gaps[3], stats_skipped,
+                                stats_frames ? stats_send_ms / stats_frames : 0.0,
+                                stats_send_max_ms));
             }
         }
         if (h264_capable) {
@@ -1931,6 +2012,8 @@ void Client::VideoStats(int64_t now) {
     }
     stats_since = now;
     std::fill(std::begin(stats_src_gaps), std::end(stats_src_gaps), 0u);
+    stats_send_ms = stats_send_max_ms = 0;
+    stats_skipped = 0;
     stats_frames = stats_bytes = stats_keys = stats_key_asks = stats_received = stats_lost = 0;
 }
 
