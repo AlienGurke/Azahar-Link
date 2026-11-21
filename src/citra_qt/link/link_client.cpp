@@ -1647,15 +1647,21 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // adapt the data rate: more while the WiFi keeps up, less when packets get lost
     if (stat_received + stat_lost >= 30) {
         const double loss = static_cast<double>(stat_lost) / (stat_received + stat_lost);
+        // With parity, what counts as lost could not be rebuilt either: mostly short WiFi
+        // bursts (a save going over), not too much data - so gentler, and not as low
+        // (the log showed 3.9 -> 0.5 MB/s in seconds, and every frame then took ~60 ms)
         if (loss > 0.05) {
-            budget_bytes *= 0.8;
+            budget_bytes *= tile_rs ? 0.9 : 0.8;
         } else if (loss < 0.02) {
-            budget_bytes += 50e3;
+            budget_bytes += tile_rs ? 150e3 : 50e3;
         }
-        budget_bytes = std::min(kMaxRate, std::max(kMinRate, budget_bytes));
+        budget_bytes = std::min(kMaxRate, std::max(tile_rs ? 1.5e6 : kMinRate, budget_bytes));
         stat_received = stat_lost = 0;
     }
     const double bytes_per_sec = budget_bytes;
+    // sending is paced so the 3DS WiFi gets no bursts, but never slower than 2.5 MB/s:
+    // a frame must be out before the next one comes
+    const double pace_bytes_per_sec = std::max(bytes_per_sec, 2.5e6);
     const size_t budget = static_cast<size_t>(bytes_per_sec * kMaxFrameSeconds);
 
     auto content_changed = [&](int t) {
@@ -1901,7 +1907,7 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
 
         // pacing, so the 3DS WiFi does not get the whole frame as one burst
         const auto due = t0 + std::chrono::microseconds(
-                                  static_cast<long long>(sent_bytes * 1e6 / bytes_per_sec));
+                                  static_cast<long long>(sent_bytes * 1e6 / pace_bytes_per_sec));
         while (std::chrono::steady_clock::now() < due && !stop_requested) {
             std::this_thread::yield();
         }
