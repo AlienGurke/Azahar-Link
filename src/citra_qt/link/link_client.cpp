@@ -1160,6 +1160,7 @@ void Client::Worker(std::string host) {
                              caps.size() >= 4 && (caps[0] & LINK_VIDCAP_H264);
             h264_capable = can;
             h264_rs = can && (caps[0] & LINK_VIDCAP_H264_RS);
+            h264_silent = 0;
             linkGfInit();
             video_resync = true;
             Log(std::string("video: ") + (can ? "H.264 (New 3DS hardware decoder)"
@@ -1807,6 +1808,17 @@ void Client::VideoStats(int64_t now) {
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
                                 "rebuilt packets {}, decoder errors {}",
                                 v[0], v[1], v[2], v[3]));
+                // pictures went out, but the 3DS showed none (e.g. an app that does not
+                // fit): twice in a row, and the picture comes as tiles again
+                if (v[0] == 0 && stats_frames >= 5) {
+                    if (++h264_silent >= 2) {
+                        Log("video: the 3DS shows no H.264 picture - tiles instead");
+                        h264_capable = false;
+                        video_resync = true;
+                    }
+                } else {
+                    h264_silent = 0;
+                }
             }
         }
     }
@@ -1906,9 +1918,9 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     bool force = h264_force_key.exchange(false);
     const int64_t now_ms = NowMs();
     if (!force && frame == h264_last) {
-        // nothing new on the screen. Once it stood still for half a second, one key frame:
+        // nothing new on the screen. Once it stood still for a quarter second, one key frame:
         // whatever got lost on the way, the 3DS then shows exactly this picture
-        if (h264_settled || now_ms - h264_changed_ms < 500) {
+        if (h264_settled || now_ms - h264_changed_ms < 250) {
             return;
         }
         force = true;
