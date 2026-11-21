@@ -174,6 +174,7 @@ private:
     void SendTiles(const std::vector<uint16_t>& frame);
     void SendH264(const std::vector<uint16_t>& frame);
     void VideoStats(int64_t now);
+    void CalibrateColors();
     H264Encoder h264;
     std::atomic<bool> h264_capable{false}; // the picture goes as H.264 now
     std::atomic<bool> h264_supported{false}; // the 3DS decodes H.264, we can encode it
@@ -181,6 +182,15 @@ private:
     std::atomic<bool> h264_force_key{false};
     std::atomic<bool> h264_key_wanted{false}; // the 3DS asks for a key frame (input packets)
     int64_t h264_key_ms = 0;        // when the last key frame went out
+    // R, G, B -> Y, U, V for the encoder; corrected once the 3DS showed how its decoder
+    // turns them back (CalibrateColors)
+    float color_matrix[3][4] = {{0.299f, 0.587f, 0.114f, 0.0f},
+                                {-0.168736f, -0.331264f, 0.5f, 128.0f},
+                                {0.5f, -0.418688f, -0.081312f, 128.0f}};
+    int calib_state = 0;            // 0 measure, 1 check the correction, 2 done
+    int calib_tries = 0;
+    int64_t calib_last_ms = 0;
+    uint32_t h264_last_made = 0;    // the time stamp of the newest picture sent
     uint64_t h264_emu_frame = 0;
     uint64_t h264_prev_emu_frame = 0;
     uint32_t stats_src_gaps[4] = {}; // frames between changed pictures (1, 2, 3, 4-6)       // the emulated frame of the newest picture

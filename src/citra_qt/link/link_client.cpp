@@ -1362,6 +1362,12 @@ void Client::VideoWorker() {
                 h264_force_key = true;
                 stats_key_asks++;
             }
+            // the colours: once the picture stood still a while, compare what the 3DS shows
+            if (calib_state < 2 && calib_tries < 6 && !got_frame && !h264_force_key &&
+                !h264_loss_since_key && !last_frame.empty() && NowMs() - h264_changed_ms > 1500 &&
+                NowMs() - h264_key_ms > 500 && NowMs() - calib_last_ms > 3000) {
+                CalibrateColors();
+            }
             if (got_frame) {
                 last_frame = frame;
                 SendH264(frame);
@@ -1930,13 +1936,26 @@ void Client::VideoStats(int64_t now) {
 
 namespace {
 // the picture turned for the 3DS framebuffer (coded column c, row r = screen x r,
-// y 239 - c) as I420, BT.601 full range (the 3DS decoder shows Y 0..255 as 0..255)
-void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) {
+// y 239 - c) as I420. `m` turns R, G, B (0..255) into Y, U, V: row i = coefficients for
+// R, G, B and the constant (BT.601 full range unless the 3DS showed it needs others)
+void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv,
+                   const float (&m)[3][4]) {
     constexpr int W = LINK_H264_WIDTH, H = LINK_H264_HEIGHT;
     yuv.resize(W * H * 3 / 2);
     uint8_t* Y = yuv.data();
     uint8_t* U = Y + W * H;
     uint8_t* V = U + (W / 2) * (H / 2);
+    // fixed point (16 bits after the point), +0.5 for rounding
+    int k[3][4];
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            k[i][j] = static_cast<int>(m[i][j] * 65536.0f + (m[i][j] < 0 ? -0.5f : 0.5f));
+        }
+        k[i][3] = static_cast<int>(m[i][3] * 65536.0f) + 32768;
+    }
+    const auto clamp8 = [](int v) {
+        return static_cast<uint8_t>(v < 0 ? 0 : v > 255 ? 255 : v);
+    };
     const auto rgb = [&](int r, int c, int& R, int& G, int& B) {
         const uint16_t p = src[(239 - c) * kWidth + r];
         R = ((p >> 11) & 31) * 255 / 31;
@@ -1951,22 +1970,50 @@ void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) 
                     int R, G, B;
                     rgb(r + dy, c + dx, R, G, B);
                     Y[(r + dy) * W + c + dx] =
-                        static_cast<uint8_t>((77 * R + 150 * G + 29 * B + 128) >> 8);
+                        clamp8((k[0][0] * R + k[0][1] * G + k[0][2] * B + k[0][3]) >> 16);
                     sr += R;
                     sg += G;
                     sb += B;
                 }
             }
-            sr /= 4;
-            sg /= 4;
-            sb /= 4;
-            const auto clamp8 = [](int v) {
-                return static_cast<uint8_t>(v < 0 ? 0 : v > 255 ? 255 : v);
-            };
-            U[(r / 2) * (W / 2) + c / 2] = clamp8(128 + ((-43 * sr - 85 * sg + 128 * sb + 128) >> 8));
-            V[(r / 2) * (W / 2) + c / 2] = clamp8(128 + ((128 * sr - 107 * sg - 21 * sb + 128) >> 8));
+            // the average of the four (x4, so /4 in the shift)
+            U[(r / 2) * (W / 2) + c / 2] =
+                clamp8(((k[1][0] * sr + k[1][1] * sg + k[1][2] * sb) / 4 + k[1][3]) >> 16);
+            V[(r / 2) * (W / 2) + c / 2] =
+                clamp8(((k[2][0] * sr + k[2][1] * sg + k[2][2] * sb) / 4 + k[2][3]) >> 16);
         }
     }
+}
+
+// solves a 4x4 system (Gauss-Jordan); false if (nearly) singular
+bool Solve4(double a[4][5]) {
+    for (int c = 0; c < 4; c++) {
+        int piv = c;
+        for (int r = c + 1; r < 4; r++) {
+            if (std::abs(a[r][c]) > std::abs(a[piv][c])) {
+                piv = r;
+            }
+        }
+        if (std::abs(a[piv][c]) < 1e-9) {
+            return false;
+        }
+        for (int j = 0; j < 5; j++) {
+            std::swap(a[c][j], a[piv][j]);
+        }
+        for (int r = 0; r < 4; r++) {
+            if (r == c) {
+                continue;
+            }
+            const double f = a[r][c] / a[c][c];
+            for (int j = c; j < 5; j++) {
+                a[r][j] -= f * a[c][j];
+            }
+        }
+    }
+    for (int r = 0; r < 4; r++) {
+        a[r][4] /= a[r][r];
+    }
+    return true;
 }
 } // namespace
 
@@ -2044,7 +2091,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         h264_settled = true;
     }
     h264_last = frame;
-    ToRotatedI420(frame, h264_yuv);
+    ToRotatedI420(frame, h264_yuv, color_matrix);
     bool key = false;
     if (!h264.Encode(h264_yuv.data(), force, NowMs(), h264_out, key) || h264_out.empty()) {
         if (force) {
@@ -2082,6 +2129,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     if (made_ms == 0) {
         made_ms = 1;
     }
+    h264_last_made = made_ms;
     const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
     std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
     for (size_t j = 0; j < groups; j++) {
@@ -2156,6 +2204,188 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
             h264_force_key = true;
         }
     }
+}
+
+// The hardware decoder of the 3DS turns Y, U, V into R, G, B its own way (the colours
+// came out paler than in tiles mode). Compare the picture it shows with the one sent: a fit
+// over plain areas gives its conversion, and the encoder uses the inverse from then on.
+void Client::CalibrateColors() {
+    constexpr int W = LINK_H264_WIDTH, H = LINK_H264_HEIGHT;
+    calib_last_ms = NowMs();
+    uint16_t st = 0;
+    std::vector<uint8_t> out;
+    const int res = TryRequest(LINK_CMD_VIDEOPROBE, nullptr, 0, st, &out);
+    if (res != 1) {
+        return; // the connection is busy: later
+    }
+    calib_tries++;
+    if (st == LINK_ERR_BADCMD) {
+        calib_state = 2; // an older 3DS app
+        return;
+    }
+    if (st != LINK_OK || out.size() < 4 + static_cast<size_t>(W * H * 2) ||
+        h264_last.size() != static_cast<size_t>(kWidth * kHeight) ||
+        h264_yuv.size() < static_cast<size_t>(W * H * 3 / 2)) {
+        return;
+    }
+    uint32_t ts;
+    std::memcpy(&ts, out.data(), 4);
+    if (ts != h264_last_made) {
+        Log("video: colours - the 3DS still shows an older picture, later");
+        return;
+    }
+    std::vector<uint16_t> dec(W * H);
+    std::memcpy(dec.data(), out.data() + 4, dec.size() * 2);
+    const uint8_t* Yp = h264_yuv.data();
+    const uint8_t* Up = Yp + W * H;
+    const uint8_t* Vp = Up + (W / 2) * (H / 2);
+    const auto src = [&](int r, int c) { return h264_last[(239 - c) * kWidth + r]; };
+    const auto expand = [](uint16_t p, int ch) {
+        return ch == 0 ? ((p >> 11) & 31) * 255 / 31
+                       : ch == 1 ? ((p >> 5) & 63) * 255 / 63 : (p & 31) * 255 / 31;
+    };
+
+    double xtx[4][4] = {}, xty[3][4] = {}, yty[3] = {};
+    double su = 0, suu = 0, sv = 0, svv = 0, err[3] = {};
+    long n = 0;
+    for (int r = 2; r + 3 < H; r += 2) {
+        for (int c = 2; c + 3 < W; c += 2) {
+            // plain area: the 2x2 block and the pixels around it are all the same colour
+            const uint16_t p0 = src(r, c);
+            bool flat = true;
+            for (int dy = -1; dy <= 2 && flat; dy++) {
+                for (int dx = -1; dx <= 2 && flat; dx++) {
+                    flat = src(r + dy, c + dx) == p0;
+                }
+            }
+            if (!flat) {
+                continue;
+            }
+            const double u = Up[(r / 2) * (W / 2) + c / 2], v = Vp[(r / 2) * (W / 2) + c / 2];
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++) {
+                    const uint16_t d = dec[(r + dy) * W + c + dx];
+                    const int rgb[3] = {expand(d, 0), expand(d, 1), expand(d, 2)};
+                    if (rgb[0] == 0 || rgb[0] == 255 || rgb[1] == 0 || rgb[1] == 255 ||
+                        rgb[2] == 0 || rgb[2] == 255) {
+                        continue; // clipped: says nothing about the conversion
+                    }
+                    const double x[4] = {static_cast<double>(Yp[(r + dy) * W + c + dx]), u, v, 1.0};
+                    for (int i = 0; i < 4; i++) {
+                        for (int j = 0; j < 4; j++) {
+                            xtx[i][j] += x[i] * x[j];
+                        }
+                    }
+                    for (int ch = 0; ch < 3; ch++) {
+                        for (int i = 0; i < 4; i++) {
+                            xty[ch][i] += x[i] * rgb[ch];
+                        }
+                        yty[ch] += static_cast<double>(rgb[ch]) * rgb[ch];
+                        err[ch] += std::abs(rgb[ch] - expand(p0, ch));
+                    }
+                    su += u;
+                    suu += u * u;
+                    sv += v;
+                    svv += v * v;
+                    n++;
+                }
+            }
+        }
+    }
+    if (n < 2000) {
+        Log(fmt::format("video: colours - too few plain areas on the screen ({}), later", n));
+        return;
+    }
+    Log(fmt::format("video: colours - average difference shown vs sent: R {:.1f}, G {:.1f}, "
+                    "B {:.1f} ({} pixels)",
+                    err[0] / n, err[1] / n, err[2] / n, n));
+    if (calib_state == 1) {
+        calib_state = 2; // checked after the correction: done
+        return;
+    }
+    const double sdu = std::sqrt(std::max(0.0, suu / n - (su / n) * (su / n)));
+    const double sdv = std::sqrt(std::max(0.0, svv / n - (sv / n) * (sv / n)));
+    if (sdu < 6 || sdv < 6) {
+        Log("video: colours - too little colour on the screen to measure, later");
+        return;
+    }
+    double coef[3][4];
+    double rms[3];
+    for (int ch = 0; ch < 3; ch++) {
+        double a[4][5];
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                a[i][j] = xtx[i][j];
+            }
+            a[i][4] = xty[ch][i];
+        }
+        if (!Solve4(a)) {
+            Log("video: colours - could not measure, later");
+            return;
+        }
+        double sse = yty[ch];
+        for (int i = 0; i < 4; i++) {
+            coef[ch][i] = a[i][4];
+            sse -= coef[ch][i] * xty[ch][i];
+        }
+        rms[ch] = std::sqrt(std::max(0.0, sse / n));
+    }
+    // as R = a*Y + b*(U-128) + c*(V-128) + d (the standard: R = Y + 1.402 (V-128),
+    // G = Y - 0.344 (U-128) - 0.714 (V-128), B = Y + 1.772 (U-128))
+    const char* names = "RGB";
+    for (int ch = 0; ch < 3; ch++) {
+        Log(fmt::format("video: colours - the 3DS makes {} = {:.3f} Y {:+.3f} (U-128) {:+.3f} "
+                        "(V-128) {:+.1f}, off by {:.1f} on average",
+                        names[ch], coef[ch][0], coef[ch][1], coef[ch][2],
+                        coef[ch][3] + 128 * (coef[ch][1] + coef[ch][2]), rms[ch]));
+    }
+    if (rms[0] > 10 || rms[1] > 10 || rms[2] > 10) {
+        Log("video: colours - the measurement is too rough, later");
+        return;
+    }
+    // the inverse: Y, U, V = L^-1 (R, G, B - d)
+    double L[3][3], inv[3][3];
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            L[i][j] = coef[i][j];
+        }
+    }
+    const double det = L[0][0] * (L[1][1] * L[2][2] - L[1][2] * L[2][1]) -
+                       L[0][1] * (L[1][0] * L[2][2] - L[1][2] * L[2][0]) +
+                       L[0][2] * (L[1][0] * L[2][1] - L[1][1] * L[2][0]);
+    if (std::abs(det) < 0.05) {
+        Log("video: colours - the measurement makes no sense, kept as it is");
+        calib_state = 2;
+        return;
+    }
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            const int i1 = (j + 1) % 3, i2 = (j + 2) % 3, j1 = (i + 1) % 3, j2 = (i + 2) % 3;
+            inv[i][j] = (L[i1][j1] * L[i2][j2] - L[i1][j2] * L[i2][j1]) / det;
+        }
+    }
+    float m[3][4];
+    for (int i = 0; i < 3; i++) {
+        double off = 0;
+        for (int j = 0; j < 3; j++) {
+            m[i][j] = static_cast<float>(inv[i][j]);
+            off -= inv[i][j] * coef[j][3];
+            if (std::abs(inv[i][j]) > 4.0) {
+                Log("video: colours - the measurement makes no sense, kept as it is");
+                calib_state = 2;
+                return;
+            }
+        }
+        m[i][3] = static_cast<float>(off);
+    }
+    std::memcpy(color_matrix, m, sizeof(m));
+    Log(fmt::format("video: colours corrected - encoder Y = {:.3f} R {:+.3f} G {:+.3f} B {:+.1f}, "
+                    "U = {:.3f} R {:+.3f} G {:+.3f} B {:+.1f}, V = {:.3f} R {:+.3f} G {:+.3f} B {:+.1f}",
+                    m[0][0], m[0][1], m[0][2], m[0][3], m[1][0], m[1][1], m[1][2], m[1][3],
+                    m[2][0], m[2][1], m[2][2], m[2][3]));
+    calib_state = 1;
+    calib_tries = 0;
+    h264_force_key = true; // the picture again, with the right colours
 }
 
 Client& Get() {
