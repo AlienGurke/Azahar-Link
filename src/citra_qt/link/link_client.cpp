@@ -1170,6 +1170,7 @@ void Client::Worker(std::string host) {
                 H264Encoder::Available() && have_caps && (caps[0] & LINK_VIDCAP_H264);
             tile_rs = have_caps && (caps[0] & LINK_VIDCAP_TILE_RS);
             tile_ts = have_caps && (caps[0] & LINK_VIDCAP_TILE_TS);
+            echo_ok = have_caps && (caps[0] & LINK_VIDCAP_ECHO);
             const bool can = supported && option_h264;
             h264_supported = supported;
             h264_failed = false;
@@ -1271,6 +1272,18 @@ void Client::Worker(std::string host) {
                     data.c_stick_x = pkt.cstickX;
                     data.c_stick_y = pkt.cstickY;
                     Service::HID::LinkController::Set(data);
+                    // every 8th packet straight back: the 3DS measures the round trip
+                    if (echo_ok && have_video_addr && (pkt.id & 7) == 0) {
+                        const uint32_t echo[2] = {LINK_ECHO_MAGIC, pkt.id};
+                        sockaddr_in to;
+                        std::memcpy(&to, video_addr, sizeof(to));
+                        std::scoped_lock lock{udp_mutex};
+                        if (udp_sock != -1) {
+                            sendto(static_cast<sock_t>(udp_sock),
+                                   reinterpret_cast<const char*>(echo), sizeof(echo), 0,
+                                   reinterpret_cast<sockaddr*>(&to), sizeof(to));
+                        }
+                    }
 
                     if (pkt.flags & LINK_INPUT_VIDEOACK) {
                         std::scoped_lock vlock{video_mutex};
@@ -1424,13 +1437,20 @@ void Client::VideoWorker() {
             }
             continue;
         }
-        if (got_frame) {
+        // Azahar hands over every frame (60 a second) even if the game drew nothing new: an
+        // unchanged one only gets the repairs (and every 8th the slow refresh) - the time
+        // goes to the next real picture instead (the log showed pictures skipped otherwise)
+        const bool same = got_frame && frame == last_frame;
+        if (same && ++tile_same_count % 8 == 0) {
+            SendTiles(frame);
+        } else if (got_frame && !same) {
+            tile_same_count = 0;
             last_frame = frame;
             SendTiles(frame);
         } else if (!last_frame.empty()) {
             // nothing new (e.g. emulation paused): still repair lost tiles and
             // replace previews with the exact picture - but once all is exact, stop
-            bool pending = !in_flight.empty();
+            bool pending = false;
             for (const uint8_t l : tile_level) {
                 if (l != 0) {
                     pending = true;
@@ -1670,6 +1690,7 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     if (frame.size() != static_cast<size_t>(kWidth * kHeight)) {
         return;
     }
+    const auto encode_t0 = std::chrono::steady_clock::now();
     if (video_resync.exchange(false) || shown_source.size() != frame.size()) {
         shown_source.assign(frame.size(), 0);
         tile_level.assign(kTiles, 255); // send everything
@@ -1794,6 +1815,8 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         return;
     }
     const auto send_t0 = std::chrono::steady_clock::now();
+    stats_encode_ms +=
+        std::chrono::duration<double, std::milli>(send_t0 - encode_t0).count();
 
     // 3) pack: mandatory tiles first, then the extras
     std::vector<std::vector<uint8_t>> packets;
@@ -1964,6 +1987,21 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     stats_bytes += sent_bytes;
 }
 
+// the input round trip the 3DS measured (LINK_VIDCAP_ECHO), from a VIDEOSTATS answer
+void Client::LogRoundTrip(const std::vector<uint8_t>& out) {
+    if (out.size() < 96) {
+        return;
+    }
+    uint32_t r[3];
+    std::memcpy(r, out.data() + 84, sizeof(r));
+    if (r[0] == 0) {
+        return;
+    }
+    Log(fmt::format("input: round trip 3DS -> PC -> 3DS {:.1f} ms on average, {:.1f} ms at most "
+                    "({} measured) - one way about {:.1f} ms",
+                    r[1] / 1000.0, r[2] / 1000.0, r[0], r[1] / 2000.0));
+}
+
 // every 10 s a line in the log: how the bottom screen goes
 void Client::VideoStats(int64_t now) {
     if (stats_since == 0) {
@@ -1996,16 +2034,19 @@ void Client::VideoStats(int64_t now) {
                 out.size() >= 80) {
                 uint32_t v[21] = {};
                 std::memcpy(v, out.data(), std::min(out.size(), sizeof(v)));
+                LogRoundTrip(out);
                 Log(fmt::format("video: 3DS shown {} (by the safety net {}), rebuilt packets {}, "
                                 "shown late {}, uneven {}, waited {} ms on average, stood 1/2/3/4+ "
                                 "refreshes {}/{}/{}/{}, 3DS loop too slow {}, made 1/2/3/4-6 "
                                 "frames apart in Azahar {}/{}/{}/{}, Azahar pictures skipped {}, "
-                                "sending took {:.1f} ms on average ({:.1f} at most)",
+                                "sending took {:.1f} ms on average ({:.1f} at most, of it {:.1f} "
+                                "making the tiles)",
                                 v[18], v[19], v[20], v[10], v[11], v[12], v[14], v[15], v[16],
                                 v[17], v[13], stats_src_gaps[0], stats_src_gaps[1],
                                 stats_src_gaps[2], stats_src_gaps[3], stats_skipped,
                                 stats_frames ? stats_send_ms / stats_frames : 0.0,
-                                stats_send_max_ms));
+                                stats_send_max_ms,
+                                stats_frames ? stats_encode_ms / stats_frames : 0.0));
             }
         }
         if (h264_capable) {
@@ -2054,6 +2095,7 @@ void Client::VideoStats(int64_t now) {
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
                                 "rebuilt packets {}, decoder errors {}{}",
                                 v[0], v[1], v[2], v[3], extra));
+                LogRoundTrip(out);
                 // pictures went out, but the 3DS showed none (e.g. an app that does not
                 // fit): twice in a row, and the picture comes as tiles again
                 if (v[0] == 0 && stats_frames >= 5) {
@@ -2071,7 +2113,7 @@ void Client::VideoStats(int64_t now) {
     }
     stats_since = now;
     std::fill(std::begin(stats_src_gaps), std::end(stats_src_gaps), 0u);
-    stats_send_ms = stats_send_max_ms = 0;
+    stats_send_ms = stats_send_max_ms = stats_encode_ms = 0;
     stats_skipped = 0;
     stats_frames = stats_bytes = stats_keys = stats_key_asks = stats_received = stats_lost = 0;
 }

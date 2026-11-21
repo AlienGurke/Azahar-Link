@@ -175,6 +175,7 @@ private:
     void SendH264(const std::vector<uint16_t>& frame);
     void VideoStats(int64_t now);
     void CalibrateColors();
+    void LogRoundTrip(const std::vector<uint8_t>& out);
     H264Encoder h264;
     std::atomic<bool> h264_capable{false}; // the picture goes as H.264 now
     std::atomic<bool> h264_supported{false}; // the 3DS decodes H.264, we can encode it
@@ -201,6 +202,7 @@ private:
     bool h264_rs = false;           // the 3DS repairs with Reed-Solomon parity
     bool tile_rs = false;           // tiles: the 3DS repairs with parity too
     bool tile_ts = false;           // tiles: the 3DS paces them by their time stamps
+    std::atomic<bool> echo_ok{false}; // the 3DS measures the input round trip
     uint32_t tile_last_made = 0;    // tiles: the time stamp of the last changed picture
     // the 3DS's input packets: gaps mean the WiFi is too full (the picture makes room)
     int64_t last_input_ms = 0;
@@ -209,7 +211,8 @@ private:
     uint32_t input_gaps_seen = 0, input_gaps_logged = 0;
     std::atomic<bool> input_squeeze{false};
     std::atomic<bool> capture_dirty{false}; // the lid changed: update the capture
-    double stats_send_ms = 0, stats_send_max_ms = 0; // tiles: time spent per frame
+    double stats_send_ms = 0, stats_send_max_ms = 0, stats_encode_ms = 0; // tiles: per frame
+    uint32_t tile_same_count = 0;   // unchanged pictures from Azahar in a row
     uint64_t stats_skipped = 0;     // pictures of Azahar the sender had no time for
     int h264_silent = 0;            // statistics in a row in which the 3DS showed nothing
     int64_t h264_changed_ms = 0;    // when the picture last changed
