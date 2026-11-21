@@ -177,6 +177,8 @@ private:
     H264Encoder h264;
     std::atomic<bool> h264_capable{false}; // the 3DS decodes H.264, we can encode it
     std::atomic<bool> h264_force_key{false};
+    std::atomic<bool> h264_key_wanted{false}; // the 3DS asks for a key frame (input packets)
+    int64_t h264_key_ms = 0;        // when the last key frame went out
     bool h264_rs = false;           // the 3DS repairs with Reed-Solomon parity
     int h264_silent = 0;            // statistics in a row in which the 3DS showed nothing
     int64_t h264_changed_ms = 0;    // when the picture last changed
@@ -188,7 +190,7 @@ private:
     std::vector<uint8_t> h264_yuv, h264_out;
     // statistics for the log (every 10 s)
     int64_t stats_since = 0;
-    uint64_t stats_frames = 0, stats_bytes = 0, stats_keys = 0, stats_received = 0, stats_lost = 0;
+    uint64_t stats_frames = 0, stats_bytes = 0, stats_keys = 0, stats_key_asks = 0, stats_received = 0, stats_lost = 0;
 
     std::atomic<State> state{State::Disconnected};
     std::atomic<bool> stop_requested{false};

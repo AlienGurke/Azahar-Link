@@ -1278,6 +1278,9 @@ void Client::Worker(std::string host) {
                     ack_mask = pkt.videoAckMask;
                     ack_new = true;
                 }
+                if (pkt.flags & LINK_INPUT_NEEDKEY) {
+                    h264_key_wanted = true;
+                }
             }
         }
 
@@ -1315,6 +1318,13 @@ void Client::VideoWorker() {
 
         VideoStats(NowMs());
         if (h264_capable) {
+            // the 3DS lost a frame it could not rebuild: a key frame at once. It keeps asking
+            // until one arrived, so not again before the last one could have arrived
+            if (h264_key_wanted.exchange(false) && NowMs() - h264_key_ms >= 150 &&
+                !h264_force_key) {
+                h264_force_key = true;
+                stats_key_asks++;
+            }
             if (got_frame) {
                 last_frame = frame;
                 SendH264(frame);
@@ -1797,8 +1807,8 @@ void Client::VideoStats(int64_t now) {
         Log(fmt::format("video: {} {:.1f} frames/s, {:.1f} KB per frame, {:.0f} KB/s, {:.1f} % lost{}",
                         h264_capable ? "H.264" : "tiles", stats_frames / secs,
                         stats_bytes / 1024.0 / stats_frames, stats_bytes / 1024.0 / secs, loss,
-                        h264_capable ? fmt::format(", {} key frames, target {} kbit/s",
-                                                   stats_keys, h264_bitrate / 1000)
+                        h264_capable ? fmt::format(", {} key frames ({} asked for by the 3DS), target {} kbit/s",
+                                                   stats_keys, stats_key_asks, h264_bitrate / 1000)
                                      : fmt::format(", rate {:.0f} KB/s", budget_bytes / 1024)));
         if (h264_capable) {
             // what the 3DS saw (never waits for a busy connection)
@@ -1840,7 +1850,7 @@ void Client::VideoStats(int64_t now) {
         }
     }
     stats_since = now;
-    stats_frames = stats_bytes = stats_keys = stats_received = stats_lost = 0;
+    stats_frames = stats_bytes = stats_keys = stats_key_asks = stats_received = stats_lost = 0;
 }
 
 namespace {
@@ -1978,10 +1988,12 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     // Reed-Solomon parity: any `groups` lost packets of the frame can be rebuilt on the
     // 3DS. About half extra (small frames: as many as data packets): the losses come in
     // bursts, and the WiFi has room (the log showed ~1 % lost at 440 KB/s)
+    // Key frames (big, and the 3DS stands still until one arrives whole) get up to 15
+    const size_t max_groups = key ? LINK_H264_MAX_PARITY : 12;
     const size_t groups = !h264_rs ? 0
                           : parts <= 2
                               ? parts
-                              : std::min<size_t>(12, std::max<size_t>(2, (parts + 1) / 2));
+                              : std::min<size_t>(max_groups, std::max<size_t>(2, (parts + 1) / 2));
     const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
     std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
     for (size_t j = 0; j < groups; j++) {
@@ -2046,6 +2058,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     stats_bytes += sent_bytes;
     if (key) {
         stats_keys++;
+        h264_key_ms = NowMs();
         h264_loss_since_key = false;
         // the hardware decoder of the 3DS shows everything grey (and later frames broken)
         // if its first key frame is all it got: right after the first one, a second
