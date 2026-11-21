@@ -1319,8 +1319,9 @@ void Client::VideoWorker() {
         VideoStats(NowMs());
         if (h264_capable) {
             // the 3DS lost a frame it could not rebuild: a key frame at once. It keeps asking
-            // until one arrived, so not again before the last one could have arrived
-            if (h264_key_wanted.exchange(false) && NowMs() - h264_key_ms >= 150 &&
+            // until one arrived, so not again before the last one could have arrived (it goes out
+            // in ~25 ms, the answer comes back in ~15-30 ms)
+            if (h264_key_wanted.exchange(false) && NowMs() - h264_key_ms >= 70 &&
                 !h264_force_key) {
                 h264_force_key = true;
                 stats_key_asks++;
