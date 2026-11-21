@@ -1556,6 +1556,34 @@ void Client::VideoWorker() {
     }
 }
 
+// How long the 3DS takes to confirm a packet. The shortest of the last seconds is the
+// WiFi's own delay; how far the recent ones lie above it is the queue in front of the 3DS.
+void Client::NoteAckDelay(int64_t delay, int64_t now) {
+    if (delay < 0 || delay > 5000) {
+        return;
+    }
+    if (now - ack_min_since > 5000) {
+        ack_min_prev = ack_min_cur;
+        ack_min_cur = delay;
+        ack_min_since = now;
+    } else {
+        ack_min_cur = std::min(ack_min_cur, delay);
+    }
+    ack_delay_recent = 0.9 * ack_delay_recent + 0.1 * static_cast<double>(delay);
+    stats_ack_delay_sum += delay;
+    stats_ack_delay_n++;
+    stats_ack_delay_max = std::max(stats_ack_delay_max, delay);
+}
+
+// ms the packets lately wait in a queue on the way to the 3DS (0: none)
+int64_t Client::QueueDelay() const {
+    const int64_t base = std::min(ack_min_prev, ack_min_cur);
+    if (stats_ack_delay_n == 0 && ack_delay_recent == 0) {
+        return 0;
+    }
+    return std::max<int64_t>(0, static_cast<int64_t>(ack_delay_recent) - base);
+}
+
 // Decide for packets in flight whether the 3DS got them; lost packets get
 // their tiles queued for resending right away.
 void Client::ProcessAcks() {
@@ -1591,7 +1619,9 @@ void Client::ProcessAcks() {
         // no receipt in time (e.g. it was the last packet before a pause). The 3DS WiFi
         // sometimes holds its packets back a while: H.264 waits longer, since a wrong
         // "lost" costs a key frame there
-        if (!received && now - p.sent_ms > (p.h264 ? 400 : p.fec ? 250 : 150)) {
+        // (with parity: 600 ms - a queue in the WiFi is no loss, and counting it as one sent
+        // everything again and made the queue longer still, see QueueDelay)
+        if (!received && now - p.sent_ms > (p.h264 ? 400 : p.fec ? 600 : 150)) {
             lost = true;
         }
         if (!received && !lost) {
@@ -1614,25 +1644,34 @@ void Client::ProcessAcks() {
             stat_received++;
             stats_received++;
             watch_received++;
+            NoteAckDelay(now - p.sent_ms, now);
         }
         in_flight.pop_front();
     }
 
-    // Receipts stuck (the test: 100 % "lost" for a minute while the 3DS got and rebuilt
-    // packets, so everything went out again and again): start over with a full picture
+    // Nearly everything "lost": receipts far behind (the WiFi queues our packets - the tests
+    // showed 200-900 packets, up to a second) or, should that ever happen, ahead of what we
+    // sent (receipts stuck). Behind: much less data at once so the queue drains; ahead:
+    // start over with a full picture.
     if (watch_received + watch_lost >= 200) {
         if (watch_lost * 10 >= (watch_received + watch_lost) * 9) {
-            Log(fmt::format("video: {} of {} packets counted as lost (newest receipt {}, newest "
-                            "sent {}) - starting over",
-                            watch_lost, watch_received + watch_lost, a_seq, video_seq - 1));
-            video_resync = true;
-            h264_force_key = true;
+            const int32_t behind = static_cast<int32_t>((video_seq - 1) - a_seq);
+            if (valid && behind < 0) {
+                Log(fmt::format("video: receipts ahead of what was sent ({} vs {}) - starting over",
+                                a_seq, video_seq - 1));
+                video_resync = true;
+                h264_force_key = true;
+            } else {
+                Log(fmt::format("video: the WiFi holds back {} packets - much less data for now",
+                                behind));
+                queue_squeeze = true;
+            }
         }
         watch_received = watch_lost = 0;
     }
 
     // never let the list grow without bound
-    while (in_flight.size() > 512) {
+    while (in_flight.size() > 2048) {
         for (const uint16_t t : in_flight.front().tiles) {
             tile_level[t] = 255;
         }
@@ -1935,6 +1974,17 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // the buttons come first: if their packets got stuck, make room at once
     if (input_squeeze.exchange(false)) {
         budget_bytes = std::max(kMinRate, budget_bytes * 0.7);
+    }
+    // a queue builds up in the WiFi (receipts come later and later, no loss yet): less,
+    // before the picture lags behind by hundreds of ms
+    if (queue_squeeze.exchange(false)) {
+        budget_bytes = std::max(kMinRate, budget_bytes * 0.5);
+    } else if (QueueDelay() > 60 && NowMs() - queue_cut_ms > 250) {
+        // (60: receipts come with the input packets, and are looked at once a frame - that
+        // alone spreads them over ~30 ms)
+        budget_bytes = std::max(kMinRate, budget_bytes * 0.8);
+        queue_cut_ms = NowMs();
+        stats_queue_cuts++;
     }
     const double bytes_per_sec = budget_bytes;
     // sending is paced at the data rate (no bursts for the 3DS WiFi; faster pacing went
@@ -2270,6 +2320,15 @@ void Client::VideoStats(int64_t now) {
         const double loss = stats_received + stats_lost
                                 ? 100.0 * stats_lost / (stats_received + stats_lost)
                                 : 0.0;
+        if (stats_ack_delay_n > 0) {
+            Log(fmt::format("video: receipts after {:.0f} ms on average ({} at most, the WiFi's "
+                            "own {} ms), data cut {} times for a queue",
+                            static_cast<double>(stats_ack_delay_sum) / stats_ack_delay_n,
+                            stats_ack_delay_max, std::min(ack_min_prev, ack_min_cur),
+                            stats_queue_cuts));
+        }
+        stats_ack_delay_sum = stats_ack_delay_n = stats_ack_delay_max = 0;
+        stats_queue_cuts = 0;
         Log(fmt::format("input: {} packets from the 3DS, longest gap {} ms, gaps over 100 ms {}",
                         input_count.exchange(0), input_gap_max.exchange(0),
                         input_gaps - input_gaps_logged));
@@ -2499,6 +2558,11 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         stat_received = stat_lost = 0;
     }
 
+    // a queue in the WiFi: lower at once
+    if (queue_squeeze.exchange(false)) {
+        h264_bitrate = std::max(2'000'000, static_cast<int>(h264_bitrate * 0.7));
+        h264.SetBitrate(h264_bitrate);
+    }
     // the data rate follows the WiFi
     if (stat_received + stat_lost >= 60) {
         const double loss = static_cast<double>(stat_lost) / (stat_received + stat_lost);

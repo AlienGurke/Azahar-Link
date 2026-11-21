@@ -172,6 +172,14 @@ private:
 
     // video
     void ProcessAcks();
+    void NoteAckDelay(int64_t delay, int64_t now);
+    int64_t QueueDelay() const;
+    // receipts: delay of each packet until confirmed (for spotting a queue in the WiFi)
+    int64_t ack_min_cur = 1000, ack_min_prev = 1000, ack_min_since = 0;
+    double ack_delay_recent = 0;
+    int64_t queue_cut_ms = 0;
+    std::atomic<bool> queue_squeeze{false};
+    int64_t stats_ack_delay_sum = 0, stats_ack_delay_n = 0, stats_ack_delay_max = 0, stats_queue_cuts = 0;
     void SendTiles(const std::vector<uint16_t>& frame);
     void PackTilePackets(std::vector<std::vector<uint8_t>>& packets,
                          std::vector<std::vector<uint16_t>>& packet_tiles);
