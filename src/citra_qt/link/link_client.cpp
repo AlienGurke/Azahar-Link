@@ -1815,6 +1815,13 @@ void Client::VideoStats(int64_t now) {
                     extra = fmt::format(", decoder behind {}, socket buffer {} KB", w[0],
                                         w[1] / 1024);
                 }
+                if (out.size() >= 36) {
+                    uint32_t f[3];
+                    std::memcpy(f, out.data() + 24, sizeof(f));
+                    extra += f[0] ? fmt::format(", freezes {} (together {} ms, longest {} ms)",
+                                                f[0], f[1], f[2])
+                                  : std::string(", no freezes");
+                }
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
                                 "rebuilt packets {}, decoder errors {}{}",
                                 v[0], v[1], v[2], v[3], extra));
@@ -1881,7 +1888,9 @@ void ToRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv) 
 // New 3DS: the bottom screen as H.264. Unchanged pictures are not sent; a lost
 // packet makes the next frame a key frame (the 3DS shows nothing broken meanwhile).
 void Client::SendH264(const std::vector<uint16_t>& frame) {
-    constexpr double kPaceBytesPerSec = 1.2e6; // the 3DS WiFi loses less when it is spread
+    // spread out a bit (the 3DS WiFi does not like bursts), but quick enough that a frame
+    // with its parity is there within ~15 ms
+    constexpr double kPaceBytesPerSec = 2.0e6;
     if (frame.size() != static_cast<size_t>(kWidth * kHeight)) {
         return;
     }
