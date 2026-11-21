@@ -1391,6 +1391,9 @@ void Client::ProcessAcks() {
             if (p.h264 && !p.parity) {
                 h264_force_key = true; // the 3DS could not repair it: it waits for a key frame
             }
+            if (p.h264) {
+                h264_loss_since_key = true;
+            }
             stat_lost++;
             stats_lost++;
         } else {
@@ -1909,12 +1912,12 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         // losses here are mostly the WiFi, not too much data (they come at 20 KB/s as
         // well): only heavy loss lowers the rate
         int rate = h264_bitrate;
-        if (loss > 0.15) {
+        if (loss > 0.08) {
             rate = static_cast<int>(rate * 0.8);
-        } else if (loss < 0.05) {
+        } else if (loss < 0.04) {
             rate += 250'000;
         }
-        rate = std::clamp(rate, 1'500'000, 5'000'000);
+        rate = std::clamp(rate, 2'000'000, 8'000'000);
         if (rate != h264_bitrate) {
             h264_bitrate = rate;
             h264.SetBitrate(rate);
@@ -1927,7 +1930,8 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     if (!force && frame == h264_last) {
         // nothing new on the screen. Once it stood still for a quarter second, one key frame:
         // whatever got lost on the way, the 3DS then shows exactly this picture
-        if (h264_settled || now_ms - h264_changed_ms < 250) {
+        // (only if something got lost since the last key frame - else the 3DS has it)
+        if (h264_settled || !h264_loss_since_key || now_ms - h264_changed_ms < 250) {
             return;
         }
         force = true;
@@ -2032,6 +2036,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     stats_bytes += sent_bytes;
     if (key) {
         stats_keys++;
+        h264_loss_since_key = false;
     }
 }
 
