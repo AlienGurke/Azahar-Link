@@ -1278,9 +1278,9 @@ void Client::Worker(std::string host) {
                 {
                     // the 3DS sends at least every 50 ms: longer gaps mean its packets get
                     // stuck on the WiFi - the picture then has to make room (see VideoWorker)
-                    const int64_t t = NowMs();
-                    const int64_t gap = last_input_ms ? t - last_input_ms : 0;
-                    last_input_ms = t;
+                    const int64_t in_ms = NowMs();
+                    const int64_t gap = last_input_ms ? in_ms - last_input_ms : 0;
+                    last_input_ms = in_ms;
                     if (gap > input_gap_max) {
                         input_gap_max = gap;
                     }
