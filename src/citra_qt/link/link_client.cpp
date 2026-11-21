@@ -1943,11 +1943,12 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     std::vector<uint8_t> pk;
     // repair packets: the XOR of every 1st/2nd data packet (see LinkProto.h)
     // Reed-Solomon parity: any `groups` lost packets of the frame can be rebuilt on the
-    // 3DS. About a third extra (small frames: as many as data packets) - the WiFi has room
+    // 3DS. About half extra (small frames: as many as data packets): the losses come in
+    // bursts, and the WiFi has room (the log showed ~1 % lost at 440 KB/s)
     const size_t groups = !h264_rs ? 0
                           : parts <= 2
                               ? parts
-                              : std::min<size_t>(8, std::max<size_t>(2, (parts + 2) / 3));
+                              : std::min<size_t>(12, std::max<size_t>(2, (parts + 1) / 2));
     const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
     std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
     for (size_t j = 0; j < groups; j++) {
