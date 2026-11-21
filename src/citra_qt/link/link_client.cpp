@@ -498,7 +498,15 @@ void Client::UpdateCapture() {
 bool Client::Request(uint16_t cmd, const void* payload, uint32_t len, uint16_t& status,
                      std::vector<uint8_t>* out) {
     std::scoped_lock lock{req_mutex};
-    return RequestLocked(cmd, payload, len, status, out);
+    // saves and games going over the WiFi make picture packets get lost more often
+    if (cmd != LINK_CMD_POLLEVENT && cmd != LINK_CMD_PING) {
+        busy_ms = NowMs();
+    }
+    const bool ok = RequestLocked(cmd, payload, len, status, out);
+    if (cmd != LINK_CMD_POLLEVENT && cmd != LINK_CMD_PING) {
+        busy_ms = NowMs();
+    }
+    return ok;
 }
 
 int Client::TryRequest(uint16_t cmd, const void* payload, uint32_t len, uint16_t& status,
@@ -1833,6 +1841,13 @@ void Client::VideoStats(int64_t now) {
                                                 f[0], f[1], f[2])
                                   : std::string(", no freezes");
                 }
+                if (out.size() >= 52) {
+                    uint32_t g[4];
+                    std::memcpy(g, out.data() + 36, sizeof(g));
+                    extra += fmt::format(", shown despite a loss {}, shown late {}, uneven {}, "
+                                         "waited {} ms on average",
+                                         g[0], g[1], g[2], g[3]);
+                }
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
                                 "rebuilt packets {}, decoder errors {}{}",
                                 v[0], v[1], v[2], v[3], extra));
@@ -1948,6 +1963,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
 
     bool force = h264_force_key.exchange(false);
     const int64_t now_ms = NowMs();
+    const int64_t frame_ms = now_ms;
     if (!force && frame == h264_last) {
         // nothing new on the screen. Once it stood still for a quarter second, one key frame:
         // whatever got lost on the way, the 3DS then shows exactly this picture
@@ -1990,11 +2006,19 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     // 3DS. About half extra (small frames: as many as data packets): the losses come in
     // bursts, and the WiFi has room (the log showed ~1 % lost at 440 KB/s)
     // Key frames (big, and the 3DS stands still until one arrives whole) get up to 15
-    const size_t max_groups = key ? LINK_H264_MAX_PARITY : 12;
+    // While a save goes over the WiFi as well (the log showed most losses then), as many
+    // as there are data packets (up to 15)
+    const bool busy = NowMs() - busy_ms < 1000;
+    const size_t max_groups = key || busy ? LINK_H264_MAX_PARITY : 12;
     const size_t groups = !h264_rs ? 0
-                          : parts <= 2
-                              ? parts
+                          : parts <= 2 || busy
+                              ? std::min<size_t>(max_groups, std::max<size_t>(2, parts))
                               : std::min<size_t>(max_groups, std::max<size_t>(2, (parts + 1) / 2));
+    // when the picture was made: the 3DS shows them as evenly paced as they were made
+    uint32_t made_ms = static_cast<uint32_t>(frame_ms) & 0x7FFFFFFFu;
+    if (made_ms == 0) {
+        made_ms = 1;
+    }
     const size_t last_len = h264_out.size() - (parts - 1) * LINK_H264_PART;
     std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
     for (size_t j = 0; j < groups; j++) {
@@ -2024,7 +2048,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         hdr.seq = video_seq++;
         hdr.baseSeq = is_parity ? static_cast<uint32_t>(LINK_H264_PARITY | (parts << 8) |
                                                          (groups << 4) | (i - parts))
-                                : 0;
+                                : made_ms;
         hdr.entryCount = static_cast<uint16_t>(is_parity ? last_len : len);
         hdr.flags = static_cast<uint16_t>((i << LINK_FRAME_INDEX_SHIFT) |
                                           (i + 1 == parts ? LINK_FRAME_LAST : 0) |
