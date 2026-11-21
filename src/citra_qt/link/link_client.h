@@ -178,6 +178,8 @@ private:
     int64_t ack_min_cur = 1000, ack_min_prev = 1000, ack_min_since = 0;
     double ack_delay_recent = 0;
     int64_t queue_cut_ms = 0;
+    double tiles_rate_actual = 0;     // tiles: bytes per second that really go out
+    int64_t tiles_rate_last_ms = 0;
     std::atomic<bool> queue_squeeze{false};
     int64_t stats_ack_delay_sum = 0, stats_ack_delay_n = 0, stats_ack_delay_max = 0, stats_queue_cuts = 0;
     void SendTiles(const std::vector<uint16_t>& frame);

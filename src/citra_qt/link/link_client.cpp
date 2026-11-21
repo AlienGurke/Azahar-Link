@@ -1569,7 +1569,7 @@ void Client::NoteAckDelay(int64_t delay, int64_t now) {
     } else {
         ack_min_cur = std::min(ack_min_cur, delay);
     }
-    ack_delay_recent = 0.9 * ack_delay_recent + 0.1 * static_cast<double>(delay);
+    ack_delay_recent = 0.7 * ack_delay_recent + 0.3 * static_cast<double>(delay);
     stats_ack_delay_sum += delay;
     stats_ack_delay_n++;
     stats_ack_delay_max = std::max(stats_ack_delay_max, delay);
@@ -1965,8 +1965,8 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         // the WiFi is full (the 3DS's own packets - the buttons! - get stuck too): less
         if (loss > 0.05) {
             budget_bytes *= 0.8;
-        } else if (loss < 0.02) {
-            budget_bytes += 50e3;
+        } else if (loss < 0.02 && NowMs() - queue_cut_ms > 1000) {
+            budget_bytes += 50e3; // (not right after a queue: let it drain first)
         }
         budget_bytes = std::min(kMaxRate, std::max(kMinRate, budget_bytes));
         stat_received = stat_lost = 0;
@@ -1977,12 +1977,17 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     }
     // a queue builds up in the WiFi (receipts come later and later, no loss yet): less,
     // before the picture lags behind by hundreds of ms
+    // Cut from what actually goes out, not from the allowance: the picture uses ~1.1 MB/s of
+    // an allowance of up to 3.9, so cutting the allowance did nothing (the test: queues of
+    // 500 packets while it was cut 10 times)
+    const double actual = std::max(kMinRate, tiles_rate_actual);
     if (queue_squeeze.exchange(false)) {
-        budget_bytes = std::max(kMinRate, budget_bytes * 0.5);
-    } else if (QueueDelay() > 60 && NowMs() - queue_cut_ms > 250) {
-        // (60: receipts come with the input packets, and are looked at once a frame - that
+        budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.5);
+        queue_cut_ms = NowMs();
+    } else if (QueueDelay() > 50 && NowMs() - queue_cut_ms > 200) {
+        // (50: receipts come with the input packets, and are looked at once a frame - that
         // alone spreads them over ~30 ms)
-        budget_bytes = std::max(kMinRate, budget_bytes * 0.8);
+        budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.75);
         queue_cut_ms = NowMs();
         stats_queue_cuts++;
     }
@@ -2276,6 +2281,13 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - send_t0)
             .count();
     stats_send_ms += took_ms;
+    // what really goes out per second (for cutting when a queue builds up)
+    const int64_t tnow = NowMs();
+    if (tiles_rate_last_ms != 0 && tnow > tiles_rate_last_ms) {
+        const double inst = sent_bytes * 1000.0 / static_cast<double>(tnow - tiles_rate_last_ms);
+        tiles_rate_actual = 0.8 * tiles_rate_actual + 0.2 * std::min(inst, 8e6);
+    }
+    tiles_rate_last_ms = tnow;
     stats_send_max_ms = std::max(stats_send_max_ms, took_ms);
     stats_frames++;
     stats_bytes += sent_bytes;
