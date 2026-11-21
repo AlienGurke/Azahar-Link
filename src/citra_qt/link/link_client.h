@@ -90,7 +90,7 @@ public:
     std::atomic<bool> option_miis{true};       // take the Miis of the 3DS
     std::atomic<bool> option_system_data{true}; // take missing system data from the 3DS
     std::atomic<bool> option_h264{true};        // bottom screen as H.264 on a New 3DS
-    std::atomic<bool> option_picture_background{true}; // picture: WiFi class background (else video)
+    std::atomic<int> wifi_prio{0}; // picture's WiFi class: 0 video, 1 background, 2 normal
 
     /// Copies the Mii database (Mii Maker) of the 3DS into Azahar now. It also happens
     /// on every connect; Azahar's own database is kept once as CFL_DB.dat.before-3ds-link.
@@ -213,6 +213,7 @@ private:
     int64_t tiles_sent_ms = 0;        // tiles: when the last frame went out
     uint64_t watch_received = 0, watch_lost = 0; // for spotting stuck receipts
     intptr_t echo_sock = -1;          // the echo goes out with the top WiFi priority
+    std::atomic<uint32_t> emu_clock_off{0}; // our clock - the newest picture's time stamp
     size_t stats_cmp_raw = 0, stats_cmp_lz4 = 0, stats_cmp_zstd1 = 0, stats_cmp_zstd9 = 0;
     uint32_t tile_last_made = 0;    // tiles: the time stamp of the last changed picture
     // the 3DS's input packets: gaps mean the WiFi is too full (the picture makes room)

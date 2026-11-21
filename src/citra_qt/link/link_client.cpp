@@ -285,10 +285,14 @@ std::string Text(const char* key) {
                                  "each day is kept for this many days (0 = none):",
                                  "Neben den neuesten 20 Backups eines Spiels wird das erste "
                                  "Backup jedes Tages so viele Tage aufgehoben (0 = keine):"}},
-        {"opt_wifi_bg", {"Bottom screen behind everything else on the WiFi (fastest buttons; off: "
-                         "ahead of other devices' traffic; from the next connect)",
-                         "Unteres Bild im WLAN hinter allem anderen (schnellste Eingaben; aus: vor "
-                         "dem Verkehr anderer Geräte; ab dem nächsten Verbinden)"}},
+        {"wifi_prio", {"WiFi priority", "WLAN-Priorität"}},
+        {"wifi_prio_0", {"Buttons high, picture medium (recommended)",
+                         "Eingaben hoch, Bild mittel (empfohlen)"}},
+        {"wifi_prio_1", {"Buttons high, picture low (fastest buttons; the picture may stall when "
+                         "the WiFi is busy)",
+                         "Eingaben hoch, Bild niedrig (schnellste Eingaben; das Bild kann bei "
+                         "vollem WLAN hängen)"}},
+        {"wifi_prio_2", {"Buttons high, picture normal", "Eingaben hoch, Bild normal"}},
         {"opt_h264", {"Bottom screen as H.264 on a New 3DS (smoother)",
                       "Unteres Bild als H.264 auf dem New 3DS (flüssiger)"}},
         {"live_done", {"Save sent to the 3DS (checked)", "Spielstand an den 3DS gesendet (geprüft)"}},
@@ -1199,8 +1203,10 @@ void Client::Worker(std::string host) {
             have_video_addr = true;
             // WiFi priorities: the picture as "video" (above other devices' normal traffic),
             // the 3DS's buttons as "voice" above it; the echo for measuring as "voice" too
-            const std::string pic = MarkQos(static_cast<intptr_t>(us), &va, false,
-                                            option_picture_background);
+            const int prio = wifi_prio;
+            const std::string pic = prio == 2 ? std::string()
+                                              : MarkQos(static_cast<intptr_t>(us), &va, false,
+                                                        prio == 1);
             const sock_t es = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
             std::string echo = "no socket";
             if (es != static_cast<sock_t>(-1)) {
@@ -1209,7 +1215,7 @@ void Client::Worker(std::string host) {
                 echo_sock = static_cast<intptr_t>(es);
             }
             Log(fmt::format("WiFi priority: picture as {} {}, echo as voice {}",
-                            option_picture_background ? "background" : "video",
+                            prio == 1 ? "background" : prio == 2 ? "normal" : "video",
                             pic.empty() ? "ok" : "failed (" + pic + ")",
                             echo.empty() ? "ok" : "failed (" + echo + ")"));
         }
@@ -1348,7 +1354,11 @@ void Client::Worker(std::string host) {
                     Service::HID::LinkController::Set(data);
                     // every 8th packet straight back: the 3DS measures the round trip
                     if (echo_ok && have_video_addr && (pkt.id & 7) == 0) {
-                        const uint32_t echo[2] = {LINK_ECHO_MAGIC, pkt.id};
+                        // + our clock and how far it is ahead of the pictures' time stamps:
+                        // the 3DS works out how long after us it shows each picture
+                        const uint32_t echo[4] = {LINK_ECHO_MAGIC, pkt.id,
+                                                  static_cast<uint32_t>(NowMs()),
+                                                  emu_clock_off.load()};
                         sockaddr_in to;
                         std::memcpy(&to, video_addr, sizeof(to));
                         std::scoped_lock lock{udp_mutex};
@@ -1450,6 +1460,11 @@ void Client::VideoWorker() {
         }
         if (got_frame) {
             h264_emu_frame = emu_frame;
+            // our clock - the picture's time stamp (see LINK_ECHO_MAGIC)
+            const uint32_t made = static_cast<uint32_t>(static_cast<double>(emu_frame) *
+                                                        (4481136.0 / 268111856.0) * 1000.0) &
+                                  0x7FFFFFFFu;
+            emu_clock_off = static_cast<uint32_t>(NowMs()) - made;
         }
         if (!have_video_addr || !video_wanted || lid_closed) {
             continue;
@@ -2229,6 +2244,15 @@ void Client::LogRoundTrip(const std::vector<uint8_t>& out) {
     Log(fmt::format("input: round trip 3DS -> PC -> 3DS {:.1f} ms on average, {:.1f} ms at most "
                     "({} measured) - one way about {:.1f} ms",
                     r[1] / 1000.0, r[2] / 1000.0, r[0], r[1] / 2000.0));
+    if (out.size() >= 108) {
+        uint32_t l[3];
+        std::memcpy(l, out.data() + 96, sizeof(l));
+        if (l[0] > 0) {
+            Log(fmt::format("video: bottom picture on the 3DS {} ms on average ({} at most) after "
+                            "Azahar had it ({} pictures)",
+                            l[1], l[2], l[0]));
+        }
+    }
 }
 
 // every 10 s a line in the log: how the bottom screen goes

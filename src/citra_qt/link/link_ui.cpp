@@ -3,6 +3,8 @@
 // Refer to the LICENSE.txt file included.
 
 #include <thread>
+#include <algorithm>
+
 #include <QAction>
 #include <QActionGroup>
 #include <QDesktopServices>
@@ -204,7 +206,24 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
     add_option("opt_h264", "h264", [](bool on) { Get().option_h264 = on; });
-    add_option("opt_wifi_bg", "wifi_background", [](bool on) { Get().option_picture_background = on; });
+    {
+        // WiFi priority of the bottom picture (the 3DS's buttons are always the top class)
+        QMenu* prio = options->addMenu(Q("wifi_prio"));
+        auto* group = new QActionGroup(prio);
+        const int cur = std::clamp(settings->value(QStringLiteral("wifi_prio"), 0).toInt(), 0, 2);
+        static const char* const keys[3] = {"wifi_prio_0", "wifi_prio_1", "wifi_prio_2"};
+        for (int i = 0; i < 3; i++) {
+            QAction* a = prio->addAction(Q(keys[i]));
+            a->setCheckable(true);
+            a->setChecked(i == cur);
+            group->addAction(a);
+            connect(a, &QAction::triggered, this, [this, i] {
+                settings->setValue(QStringLiteral("wifi_prio"), i);
+                Get().wifi_prio = i;
+            });
+        }
+        Get().wifi_prio = cur;
+    }
     options->addSeparator();
     {
         // writing back is off until switched on on purpose
