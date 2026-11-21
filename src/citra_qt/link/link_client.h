@@ -175,7 +175,9 @@ private:
     void SendH264(const std::vector<uint16_t>& frame);
     void VideoStats(int64_t now);
     H264Encoder h264;
-    std::atomic<bool> h264_capable{false}; // the 3DS decodes H.264, we can encode it
+    std::atomic<bool> h264_capable{false}; // the picture goes as H.264 now
+    std::atomic<bool> h264_supported{false}; // the 3DS decodes H.264, we can encode it
+    std::atomic<bool> h264_failed{false};    // it did not work this connection: tiles
     std::atomic<bool> h264_force_key{false};
     std::atomic<bool> h264_key_wanted{false}; // the 3DS asks for a key frame (input packets)
     int64_t h264_key_ms = 0;        // when the last key frame went out

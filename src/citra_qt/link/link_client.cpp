@@ -275,8 +275,8 @@ std::string Text(const char* key) {
                                  "each day is kept for this many days (0 = none):",
                                  "Neben den neuesten 20 Backups eines Spiels wird das erste "
                                  "Backup jedes Tages so viele Tage aufgehoben (0 = keine):"}},
-        {"opt_h264", {"Bottom screen as H.264 on a New 3DS (smoother; from the next connect)",
-                      "Unteres Bild als H.264 auf dem New 3DS (flüssiger; ab dem nächsten Verbinden)"}},
+        {"opt_h264", {"Bottom screen as H.264 on a New 3DS (smoother)",
+                      "Unteres Bild als H.264 auf dem New 3DS (flüssiger)"}},
         {"live_done", {"Save sent to the 3DS (checked)", "Spielstand an den 3DS gesendet (geprüft)"}},
         {"live_stopped", {"Sending to the 3DS while playing stopped: %1",
                           "Senden an den 3DS während des Spielens angehalten: %1"}},
@@ -1163,11 +1163,14 @@ void Client::Worker(std::string host) {
             // the bottom screen: H.264 if the 3DS has the hardware decoder (New 3DS)
             uint16_t st = 0;
             std::vector<uint8_t> caps;
-            const bool can = option_h264 && H264Encoder::Available() &&
-                             Request(LINK_CMD_VIDEOCAPS, nullptr, 0, st, &caps) && st == LINK_OK &&
-                             caps.size() >= 4 && (caps[0] & LINK_VIDCAP_H264);
+            const bool supported = H264Encoder::Available() &&
+                                   Request(LINK_CMD_VIDEOCAPS, nullptr, 0, st, &caps) &&
+                                   st == LINK_OK && caps.size() >= 4 && (caps[0] & LINK_VIDCAP_H264);
+            const bool can = supported && option_h264;
+            h264_supported = supported;
+            h264_failed = false;
             h264_capable = can;
-            h264_rs = can && (caps[0] & LINK_VIDCAP_H264_RS);
+            h264_rs = supported && (caps[0] & LINK_VIDCAP_H264_RS);
             h264_silent = 0;
             linkGfInit();
             video_resync = true;
@@ -1328,6 +1331,19 @@ void Client::VideoWorker() {
 
         ProcessAcks();
 
+        // the option switched while connected: from the next picture on
+        const bool want_h264 = h264_supported && option_h264 && !h264_failed;
+        if (want_h264 != h264_capable) {
+            h264_capable = want_h264;
+            video_resync = true;
+            // send the picture on the screen at once, even if nothing moves
+            if (want_h264) {
+                h264_force_key = true;
+            } else {
+                tile_level.assign(kTiles, 255);
+            }
+            Log(want_h264 ? "video: switched to H.264" : "video: switched to tiles");
+        }
         VideoStats(NowMs());
         if (h264_capable) {
             // the 3DS lost a frame it could not rebuild: a key frame at once. It keeps asking
@@ -1874,6 +1890,7 @@ void Client::VideoStats(int64_t now) {
                 if (v[0] == 0 && stats_frames >= 5) {
                     if (++h264_silent >= 2) {
                         Log("video: the 3DS shows no H.264 picture - tiles instead");
+                        h264_failed = true;
                         h264_capable = false;
                         video_resync = true;
                     }
@@ -1943,6 +1960,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         if (!h264.IsOpen() &&
             !h264.Open(LINK_H264_WIDTH, LINK_H264_HEIGHT, 60, h264_bitrate)) {
             Log("video: the H.264 encoder did not start - tiles instead");
+            h264_failed = true;
             h264_capable = false;
             video_resync = true;
             return;
