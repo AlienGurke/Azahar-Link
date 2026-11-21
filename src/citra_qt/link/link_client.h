@@ -176,6 +176,7 @@ private:
     void VideoStats(int64_t now);
     void CalibrateColors();
     void LogRoundTrip(const std::vector<uint8_t>& out);
+    static std::string MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice);
     H264Encoder h264;
     std::atomic<bool> h264_capable{false}; // the picture goes as H.264 now
     std::atomic<bool> h264_supported{false}; // the 3DS decodes H.264, we can encode it
@@ -203,6 +204,8 @@ private:
     bool tile_rs = false;           // tiles: the 3DS repairs with parity too
     bool tile_ts = false;           // tiles: the 3DS paces them by their time stamps
     std::atomic<bool> echo_ok{false}; // the 3DS measures the input round trip
+    intptr_t echo_sock = -1;          // the echo goes out with the top WiFi priority
+    size_t stats_cmp_raw = 0, stats_cmp_lz4 = 0, stats_cmp_zstd1 = 0, stats_cmp_zstd9 = 0;
     uint32_t tile_last_made = 0;    // tiles: the time stamp of the last changed picture
     // the 3DS's input packets: gaps mean the WiFi is too full (the picture makes room)
     int64_t last_input_ms = 0;

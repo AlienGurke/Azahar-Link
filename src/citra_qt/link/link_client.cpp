@@ -12,6 +12,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <qos2.h>
 typedef SOCKET sock_t;
 #define closesock closesocket
 #else
@@ -33,6 +34,7 @@ typedef int sock_t;
 #include <ctime>
 #include <cstring>
 #include <map>
+#include <span>
 
 #include <QLocale>
 #include <fmt/format.h>
@@ -45,6 +47,13 @@ typedef int sock_t;
 #include "common/file_util.h"
 #include "core/hle/service/hid/hid.h"
 #include "video_core/renderer_base.h"
+
+#include "common/common_types.h"
+
+// (common/zstd_compression.h pulls in boost serialization; only this one is needed)
+namespace Common::Compression {
+std::vector<u8> CompressDataZSTD(std::span<const u8> source, s32 compression_level);
+}
 
 
 namespace Link {
@@ -394,6 +403,42 @@ void Client::CloseSockets() {
         closesock(static_cast<sock_t>(udp_sock));
         udp_sock = -1;
     }
+    if (echo_sock != -1) {
+        closesock(static_cast<sock_t>(echo_sock));
+        echo_sock = -1;
+    }
+}
+
+// Marks a UDP socket's packets to `to` with a WiFi priority class: "voice" (top) or
+// "background" (bottom). Returns "" or what went wrong.
+std::string Client::MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice) {
+    sockaddr_in to;
+    std::memcpy(&to, to_sockaddr_in, sizeof(to));
+#ifdef _WIN32
+    static HANDLE qos = nullptr;
+    if (!qos) {
+        QOS_VERSION version{1, 0};
+        if (!QOSCreateHandle(&version, &qos)) {
+            qos = nullptr;
+            return fmt::format("QOSCreateHandle {}", GetLastError());
+        }
+    }
+    QOS_FLOWID flow = 0;
+    sockaddr_in dest = to;
+    if (!QOSAddSocketToFlow(qos, static_cast<SOCKET>(sock), reinterpret_cast<PSOCKADDR>(&dest),
+                            voice ? QOSTrafficTypeVoice : QOSTrafficTypeBackground,
+                            QOS_NON_ADAPTIVE_FLOW, &flow)) {
+        return fmt::format("{}", GetLastError());
+    }
+    return "";
+#else
+    (void)to;
+    const int tos = voice ? 0xC0 : 0x20;
+    if (setsockopt(static_cast<sock_t>(sock), IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) != 0) {
+        return fmt::format("{}", errno);
+    }
+    return "";
+#endif
 }
 
 void Client::PushMessage(const std::string& msg) {
@@ -1146,6 +1191,19 @@ void Client::Worker(std::string host) {
             std::memcpy(video_addr, &va, sizeof(va));
             video_resync = true;
             have_video_addr = true;
+            // WiFi priorities: the picture as "background", so the 3DS's buttons (marked
+            // "voice" on the 3DS) get the air first; the echo for measuring as "voice" too
+            const std::string pic = MarkQos(static_cast<intptr_t>(us), &va, false);
+            const sock_t es = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            std::string echo = "no socket";
+            if (es != static_cast<sock_t>(-1)) {
+                echo = MarkQos(static_cast<intptr_t>(es), &va, true);
+                std::scoped_lock lock{udp_mutex};
+                echo_sock = static_cast<intptr_t>(es);
+            }
+            Log(fmt::format("WiFi priority: picture as background {}, echo as voice {}",
+                            pic.empty() ? "ok" : "failed (" + pic + ")",
+                            echo.empty() ? "ok" : "failed (" + echo + ")"));
         }
 
         state = State::Connected;
@@ -1171,6 +1229,13 @@ void Client::Worker(std::string host) {
             tile_rs = have_caps && (caps[0] & LINK_VIDCAP_TILE_RS);
             tile_ts = have_caps && (caps[0] & LINK_VIDCAP_TILE_TS);
             echo_ok = have_caps && (caps[0] & LINK_VIDCAP_ECHO);
+            if (have_caps && caps.size() >= 8) {
+                uint32_t tos;
+                std::memcpy(&tos, caps.data() + 4, 4);
+                Log(tos == 0 ? std::string("WiFi priority: 3DS buttons as voice ok")
+                             : fmt::format("WiFi priority: 3DS buttons as voice failed ({})",
+                                           static_cast<int32_t>(tos)));
+            }
             const bool can = supported && option_h264;
             h264_supported = supported;
             h264_failed = false;
@@ -1278,8 +1343,9 @@ void Client::Worker(std::string host) {
                         sockaddr_in to;
                         std::memcpy(&to, video_addr, sizeof(to));
                         std::scoped_lock lock{udp_mutex};
-                        if (udp_sock != -1) {
-                            sendto(static_cast<sock_t>(udp_sock),
+                        const intptr_t es = echo_sock != -1 ? echo_sock : udp_sock;
+                        if (es != -1) {
+                            sendto(static_cast<sock_t>(es),
                                    reinterpret_cast<const char*>(echo), sizeof(echo), 0,
                                    reinterpret_cast<sockaddr*>(&to), sizeof(to));
                         }
@@ -1892,6 +1958,22 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         return;
     }
 
+    // how much a lossless compression of each packet would save (only measured, for the log)
+    if (!must.empty()) {
+        std::vector<char> lz(LZ4_compressBound(LINK_FRAME_MAX_BYTES));
+        for (const std::vector<uint8_t>& pk : packets) {
+            const size_t n = pk.size() - sizeof(LinkFramePacket);
+            const uint8_t* d = pk.data() + sizeof(LinkFramePacket);
+            stats_cmp_raw += n;
+            const int l = LZ4_compress_default(reinterpret_cast<const char*>(d), lz.data(),
+                                               static_cast<int>(n), static_cast<int>(lz.size()));
+            stats_cmp_lz4 += l > 0 && static_cast<size_t>(l) < n ? static_cast<size_t>(l) : n;
+            const std::span<const u8> src(d, n);
+            stats_cmp_zstd1 += std::min(n, Common::Compression::CompressDataZSTD(src, 1).size());
+            stats_cmp_zstd9 += std::min(n, Common::Compression::CompressDataZSTD(src, 9).size());
+        }
+    }
+
     // everything before base_seq is confirmed, or lost and repaired by this frame
     const uint32_t base_seq = in_flight.empty() ? video_seq : in_flight.front().seq;
 
@@ -2048,6 +2130,13 @@ void Client::VideoStats(int64_t now) {
                                 stats_send_max_ms,
                                 stats_frames ? stats_encode_ms / stats_frames : 0.0));
             }
+            if (stats_cmp_raw > 0) {
+                Log(fmt::format("video: tiles could be packed to LZ4 {:.0f} %, zstd-1 {:.0f} %, "
+                                "zstd-9 {:.0f} % of their size (each packet on its own, {} KB)",
+                                100.0 * stats_cmp_lz4 / stats_cmp_raw,
+                                100.0 * stats_cmp_zstd1 / stats_cmp_raw,
+                                100.0 * stats_cmp_zstd9 / stats_cmp_raw, stats_cmp_raw / 1024));
+            }
         }
         if (h264_capable) {
             // what the 3DS saw (never waits for a busy connection)
@@ -2114,6 +2203,7 @@ void Client::VideoStats(int64_t now) {
     stats_since = now;
     std::fill(std::begin(stats_src_gaps), std::end(stats_src_gaps), 0u);
     stats_send_ms = stats_send_max_ms = stats_encode_ms = 0;
+    stats_cmp_raw = stats_cmp_lz4 = stats_cmp_zstd1 = stats_cmp_zstd9 = 0;
     stats_skipped = 0;
     stats_frames = stats_bytes = stats_keys = stats_key_asks = stats_received = stats_lost = 0;
 }

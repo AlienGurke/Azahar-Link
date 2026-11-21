@@ -317,6 +317,9 @@ target_link_libraries(citra_qt PUBLIC Boost::boost Qt6::Widgets)
 target_link_libraries(citra_qt PRIVATE nihstro-headers Qt6::Multimedia Qt6::Concurrent)
 target_link_libraries(citra_qt PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
 if (WIN32)
+    target_link_libraries(citra_qt PRIVATE qwave) # 3DS Link: WiFi priority classes
+endif()
+if (WIN32)
     target_link_libraries(citra_qt PRIVATE ws2_32)
 endif()
 # 3DS Link: H.264 for the bottom screen of a New 3DS, if OpenH264 is there
