@@ -183,6 +183,7 @@ private:
     bool h264_settled = true;       // a key frame went out since it stands still
     int h264_bitrate = 8'000'000;
     bool h264_loss_since_key = true; // a packet got lost since the last key frame
+    bool h264_second_key = false;    // send one more key frame right after the first
     std::vector<uint16_t> h264_last;
     std::vector<uint8_t> h264_yuv, h264_out;
     // statistics for the log (every 10 s)

@@ -1912,6 +1912,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         }
         h264_last.clear();
         h264_force_key = true;
+        h264_second_key = true; // the 3DS decoder needs two (see below)
         stat_received = stat_lost = 0;
     }
 
@@ -2046,6 +2047,13 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     if (key) {
         stats_keys++;
         h264_loss_since_key = false;
+        // the hardware decoder of the 3DS shows everything grey (and later frames broken)
+        // if its first key frame is all it got: right after the first one, a second
+        // (Moonlight-N3DS does the same)
+        if (h264_second_key) {
+            h264_second_key = false;
+            h264_force_key = true;
+        }
     }
 }
 
