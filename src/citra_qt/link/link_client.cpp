@@ -1897,7 +1897,10 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         budget_bytes = std::max(kMinRate, budget_bytes * 0.7);
     }
     const double bytes_per_sec = budget_bytes;
-    const double pace_bytes_per_sec = bytes_per_sec;
+    // Sending is paced (no bursts for the 3DS WiFi), but a frame should be out quickly: the
+    // longer it takes, the longer the 3DS has to hold every picture back to show them evenly
+    // (the log: ~10 ms per frame, ~20 ms held back). The buttons have the WiFi priority now.
+    const double pace_bytes_per_sec = std::max(bytes_per_sec, 5.0e6);
     // with the 3DS pacing by time stamps a frame must be out within one picture of a 30 fps
     // game (else it is late and the next one waits): bigger changes come as previews first
     // (packed with LZ4, the same bytes on the air hold that much more)
