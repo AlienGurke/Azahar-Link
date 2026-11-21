@@ -1275,6 +1275,20 @@ void Client::Worker(std::string host) {
                     UpdateCapture();
                 }
 
+                {
+                    // the 3DS sends at least every 50 ms: longer gaps mean its packets get
+                    // stuck on the WiFi - the picture then has to make room (see VideoWorker)
+                    const int64_t t = NowMs();
+                    const int64_t gap = last_input_ms ? t - last_input_ms : 0;
+                    last_input_ms = t;
+                    if (gap > input_gap_max) {
+                        input_gap_max = gap;
+                    }
+                    if (gap > 100) {
+                        input_gaps++;
+                    }
+                    input_count++;
+                }
                 Service::HID::ArticBaseController::ControllerData data{};
                 data.index = pkt.id;
                 data.pad = pkt.keys;
@@ -1346,6 +1360,16 @@ void Client::VideoWorker() {
 
         ProcessAcks();
 
+        // the buttons: a gap of more than 100 ms since the last check makes the picture
+        // smaller at once (tiles: less data per second; H.264: lower bit rate)
+        if (input_gaps != input_gaps_seen) {
+            input_gaps_seen = input_gaps;
+            input_squeeze = true;
+            if (h264_capable && h264.IsOpen()) {
+                h264_bitrate = std::max(2'000'000, static_cast<int>(h264_bitrate * 0.8));
+                h264.SetBitrate(h264_bitrate);
+            }
+        }
         // the option switched while connected: from the next picture on
         const bool want_h264 = h264_supported && option_h264 && !h264_failed;
         if (want_h264 != h264_capable) {
@@ -1647,22 +1671,25 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // adapt the data rate: more while the WiFi keeps up, less when packets get lost
     if (stat_received + stat_lost >= 30) {
         const double loss = static_cast<double>(stat_lost) / (stat_received + stat_lost);
-        // With parity, what counts as lost could not be rebuilt either: mostly short WiFi
-        // bursts (a save going over), not too much data - so gentler, and not as low
-        // (the log showed 3.9 -> 0.5 MB/s in seconds, and every frame then took ~60 ms)
+        // the WiFi is full (the 3DS's own packets - the buttons! - get stuck too): less
         if (loss > 0.05) {
-            budget_bytes *= tile_rs ? 0.9 : 0.8;
+            budget_bytes *= 0.8;
         } else if (loss < 0.02) {
-            budget_bytes += tile_rs ? 150e3 : 50e3;
+            budget_bytes += 50e3;
         }
-        budget_bytes = std::min(kMaxRate, std::max(tile_rs ? 1.5e6 : kMinRate, budget_bytes));
+        budget_bytes = std::min(kMaxRate, std::max(kMinRate, budget_bytes));
         stat_received = stat_lost = 0;
     }
+    // the buttons come first: if their packets got stuck, make room at once
+    if (input_squeeze.exchange(false)) {
+        budget_bytes = std::max(kMinRate, budget_bytes * 0.7);
+    }
     const double bytes_per_sec = budget_bytes;
-    // sending is paced so the 3DS WiFi gets no bursts, but never slower than 2.5 MB/s:
-    // a frame must be out before the next one comes
-    const double pace_bytes_per_sec = std::max(bytes_per_sec, 2.5e6);
-    const size_t budget = static_cast<size_t>(bytes_per_sec * kMaxFrameSeconds);
+    const double pace_bytes_per_sec = bytes_per_sec;
+    // with the 3DS pacing by time stamps a frame must be out within one picture of a 30 fps
+    // game (else it is late and the next one waits): bigger changes come as previews first
+    const size_t budget =
+        static_cast<size_t>(bytes_per_sec * (tile_ts ? 1.0 / 30.0 : kMaxFrameSeconds));
 
     auto content_changed = [&](int t) {
         const int base = TileBase(t);
@@ -1833,12 +1860,11 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     const uint32_t frame_id = ++video_frame_id;
     const size_t k = packets.size();
     // Reed-Solomon parity (see LinkProto.h): about half extra, at least 2, at most 15
-    const bool busy = NowMs() - busy_ms < 1000;
-    const size_t groups =
-        !tile_rs || k > LINK_TILE_MAX_PACKETS
-            ? 0
-            : std::min<size_t>(LINK_TILE_MAX_PARITY,
-                               std::max<size_t>(2, busy ? k : (k + 1) / 2));
+    // about a third extra (at least 2): each byte more takes WiFi time from the buttons
+    const size_t groups = !tile_rs || k > LINK_TILE_MAX_PACKETS
+                              ? 0
+                              : std::min<size_t>(LINK_TILE_MAX_PARITY,
+                                                 std::max<size_t>(2, (k + 2) / 3));
     const uint32_t first_seq = video_seq;
     for (size_t i = 0; i < k; i++) {
         std::vector<uint8_t>& pk = packets[i];
@@ -1936,6 +1962,10 @@ void Client::VideoStats(int64_t now) {
         const double loss = stats_received + stats_lost
                                 ? 100.0 * stats_lost / (stats_received + stats_lost)
                                 : 0.0;
+        Log(fmt::format("input: {} packets from the 3DS, longest gap {} ms, gaps over 100 ms {}",
+                        input_count.exchange(0), input_gap_max.exchange(0),
+                        input_gaps - input_gaps_logged));
+        input_gaps_logged = input_gaps;
         Log(fmt::format("video: {} {:.1f} frames/s, {:.1f} KB per frame, {:.0f} KB/s, {:.1f} % lost{}",
                         h264_capable ? "H.264" : "tiles", stats_frames / secs,
                         stats_bytes / 1024.0 / stats_frames, stats_bytes / 1024.0 / secs, loss,

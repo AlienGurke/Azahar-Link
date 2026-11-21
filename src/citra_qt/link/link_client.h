@@ -202,6 +202,12 @@ private:
     bool tile_rs = false;           // tiles: the 3DS repairs with parity too
     bool tile_ts = false;           // tiles: the 3DS paces them by their time stamps
     uint32_t tile_last_made = 0;    // tiles: the time stamp of the last changed picture
+    // the 3DS's input packets: gaps mean the WiFi is too full (the picture makes room)
+    int64_t last_input_ms = 0;
+    std::atomic<int64_t> input_gap_max{0};
+    std::atomic<uint32_t> input_gaps{0}, input_count{0};
+    uint32_t input_gaps_seen = 0, input_gaps_logged = 0;
+    std::atomic<bool> input_squeeze{false};
     double stats_send_ms = 0, stats_send_max_ms = 0; // tiles: time spent per frame
     uint64_t stats_skipped = 0;     // pictures of Azahar the sender had no time for
     int h264_silent = 0;            // statistics in a row in which the 3DS showed nothing
