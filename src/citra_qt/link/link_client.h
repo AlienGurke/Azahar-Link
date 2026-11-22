@@ -230,6 +230,7 @@ private:
     bool tile_ts = false;           // tiles: the 3DS paces them by their time stamps
     std::atomic<bool> echo_ok{false}; // the 3DS measures the input round trip
     bool tile_lz4 = false;            // tiles: the 3DS unpacks LZ4 packets
+    bool tile_lz4x = false;           // ... with the packed size in the packet (MDFX)
     double lz4_ratio = 0.65;          // tiles: packed size / raw size, recently
     int64_t tiles_sent_ms = 0;        // tiles: when the last frame went out
     uint64_t watch_received = 0, watch_lost = 0; // for spotting stuck receipts

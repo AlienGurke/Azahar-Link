@@ -1244,6 +1244,7 @@ void Client::Worker(std::string host) {
             tile_ts = have_caps && (caps[0] & LINK_VIDCAP_TILE_TS);
             echo_ok = have_caps && (caps[0] & LINK_VIDCAP_ECHO);
             tile_lz4 = have_caps && (caps[0] & LINK_VIDCAP_TILE_LZ4);
+            tile_lz4x = have_caps && (caps[0] & LINK_VIDCAP_TILE_LZ4X);
             if (have_caps && caps.size() >= 8) {
                 uint32_t tos;
                 std::memcpy(&tos, caps.data() + 4, 4);
@@ -1981,13 +1982,20 @@ void Client::PackTilePackets(std::vector<std::vector<uint8_t>>& packets,
             std::vector<uint8_t> pk;
             LinkFramePacket hdr = {};
             hdr.entryCount = static_cast<uint16_t>(b - a);
-            if (c > 0 && static_cast<size_t>(c) + 2 < rawlen &&
-                H + 2 + static_cast<size_t>(c) <= LINK_FRAME_MAX_BYTES) {
-                hdr.magic = LINK_FRAMEZ_MAGIC;
-                pk.resize(H + 2 + c);
+            // MDFX: with the packed size (a packet rebuilt on the 3DS is zero-padded, and LZ4
+            // needs the exact size - with MDFZ every rebuilt packed packet was lost there)
+            const size_t zh = tile_lz4x ? 4 : 2;
+            if (c > 0 && static_cast<size_t>(c) + zh < rawlen &&
+                H + zh + static_cast<size_t>(c) <= LINK_FRAME_MAX_BYTES) {
+                hdr.magic = tile_lz4x ? LINK_FRAMEZX_MAGIC : LINK_FRAMEZ_MAGIC;
+                pk.resize(H + zh + c);
                 const uint16_t rl = static_cast<uint16_t>(rawlen);
+                const uint16_t pl = static_cast<uint16_t>(c);
                 std::memcpy(&pk[H], &rl, 2);
-                std::memcpy(&pk[H + 2], lz.data(), c);
+                if (tile_lz4x) {
+                    std::memcpy(&pk[H + 2], &pl, 2);
+                }
+                std::memcpy(&pk[H + zh], lz.data(), c);
             } else if (H + rawlen <= LINK_FRAME_MAX_BYTES) {
                 hdr.magic = LINK_FRAME_MAGIC;
                 pk.resize(H + rawlen);
