@@ -2551,7 +2551,7 @@ void Client::VideoStats(int64_t now) {
                 }
                 extra += fmt::format(", frames Azahar could not read back {}",
                                      VideoCore::GetLinkCapture().skipped.exchange(0));
-                extra += fmt::format(", made 1/2/3/4-6 frames apart in Azahar {}/{}/{}/{}
+                extra += fmt::format(", made 1/2/3/4-6 frames apart in Azahar {}/{}/{}/{}",
                                      stats_src_gaps[0], stats_src_gaps[1], stats_src_gaps[2],
                                      stats_src_gaps[3]);
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
