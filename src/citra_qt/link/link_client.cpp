@@ -34,6 +34,9 @@ typedef int sock_t;
 #include <ctime>
 #include <cstring>
 #include <future>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include <map>
 #include <span>
 
@@ -168,18 +171,15 @@ std::string Format(std::string text, const std::string& a, const std::string& b)
     return text;
 }
 
-void Log(const std::string& line) {
-    // Appends (cheap): this runs in the picture's thread too, and reading and rewriting the
-    // whole file for every line took long enough to make the picture on the 3DS hitch every
-    // 10 s (when the statistics are written). Trimmed once per run.
-    static std::mutex log_mutex;
-    static bool trimmed = false;
-    std::scoped_lock lock{log_mutex};
+namespace {
+// Writes the log lines in its own thread: even appending to a file (opening, writing,
+// closing, maybe a virus scanner looking) took long enough in the picture's thread to put
+// a picture one refresh late on the 3DS every 10 s, when the statistics are written.
+void LogWriter(std::deque<std::string>& queue, std::mutex& m, std::condition_variable& cv) {
     const std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/";
     const std::string path = dir + "link-log.txt";
-    if (!trimmed) {
-        trimmed = true;
-        FileUtil::CreateFullPath(dir);
+    FileUtil::CreateFullPath(dir);
+    {
         std::string old;
         if (FileUtil::Exists(path) && FileUtil::ReadFileToString(true, path, old) &&
             old.size() > 512 * 1024) {
@@ -187,14 +187,40 @@ void Log(const std::string& line) {
             FileUtil::WriteStringToFile(true, path, old);
         }
     }
+    for (;;) {
+        std::string text;
+        {
+            std::unique_lock lock{m};
+            cv.wait(lock, [&] { return !queue.empty(); });
+            while (!queue.empty()) {
+                text += queue.front();
+                queue.pop_front();
+            }
+        }
+        FileUtil::IOFile file(path, "ab");
+        if (file.IsOpen()) {
+            file.WriteBytes(text.data(), text.size());
+        }
+    }
+}
+} // namespace
+
+void Log(const std::string& line) {
+    static std::mutex m;
+    static std::condition_variable cv;
+    static std::deque<std::string> queue;
+    static std::once_flag started;
+    std::call_once(started, [] {
+        std::thread(LogWriter, std::ref(queue), std::ref(m), std::ref(cv)).detach();
+    });
     const std::time_t t = std::time(nullptr);
     char stamp[32];
     std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
-    const std::string text = std::string(stamp) + "  " + line + "\n";
-    FileUtil::IOFile file(path, "ab");
-    if (file.IsOpen()) {
-        file.WriteBytes(text.data(), text.size());
+    {
+        std::scoped_lock lock{m};
+        queue.push_back(std::string(stamp) + "  " + line + "\n");
     }
+    cv.notify_one();
 }
 
 std::string Text(const char* key) {
