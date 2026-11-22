@@ -1564,7 +1564,7 @@ void Client::VideoWorker() {
             // still previews (or lost tiles) on the 3DS: sharpen them at once, not only with
             // every 8th unchanged frame (the test: coarse tiles stayed on still pictures)
             SendTiles(frame);
-        } else if (same && !tile_held && ++tile_same_count % 8 == 0) {
+        } else if (same && !tile_held && ++tile_same_count % 4 == 0) {
             SendTiles(frame);
         } else if (!last_frame.empty() && !tile_held) {
             // nothing new (e.g. emulation paused): still repair lost tiles and
@@ -1691,6 +1691,10 @@ void Client::ProcessAcks() {
     }
 
     const int64_t now = NowMs();
+    // how many packets went out that the 3DS has not confirmed yet: a real queue in the WiFi
+    if (valid) {
+        acks_behind = static_cast<int32_t>((video_seq - 1) - a_seq);
+    }
     while (!in_flight.empty()) {
         SentPacket& p = in_flight.front();
         bool received = false, lost = false;
@@ -2027,7 +2031,8 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // arrive meanwhile are skipped, their changes go with the next one. Only if a
     // frame would take longer are tiles sent coarser (half, then quarter
     // resolution). Spare budget sharpens previews and refreshes a few tiles.
-    constexpr int kRefreshPerFrame = 4;
+    // every tile again now and then, in case one went wrong unnoticed: all 1200 in ~75 frames
+    constexpr int kRefreshPerFrame = 16;
     constexpr double kMinRate = 0.5e6, kMaxRate = 4.0e6; // bytes per second
     constexpr double kMaxFrameSeconds = 0.09;
 
@@ -2076,9 +2081,10 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.5);
         queue_cut_ms = NowMs();
         TileSlower();
-    } else if (QueueDelay() > 80 && NowMs() - queue_cut_ms > 200) {
-        // (80: receipts come with the input packets, and are looked at once a frame - that
-        // alone spreads them over ~30 ms; at 50 short spikes alone cut the frame rate)
+    } else if (acks_behind > 150 && NowMs() - queue_cut_ms > 200) {
+        // More than ~150 packets out but not confirmed (~150 ms of picture at 30 fps): a real
+        // queue. (Receipt times were too noisy - the PC looks at them only once a frame - and
+        // their spikes alone kept halving the frame rate without any queue.)
         budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.75);
         queue_cut_ms = NowMs();
         stats_queue_cuts++;
@@ -2455,6 +2461,15 @@ void Client::VideoStats(int64_t now) {
                 uint32_t v[21] = {};
                 std::memcpy(v, out.data(), std::min(out.size(), sizeof(v)));
                 LogRoundTrip(out);
+                if (out.size() >= 116) {
+                    uint32_t w[2];
+                    std::memcpy(w, out.data() + 108, sizeof(w));
+                    if (w[0] || w[1]) {
+                        Log(fmt::format("video: 3DS dropped {} outdated tile packets, {} because "
+                                        "it was behind",
+                                        w[0], w[1]));
+                    }
+                }
                 Log(fmt::format("video: 3DS shown {} (by the safety net {}), rebuilt packets {}, "
                                 "shown late {}, uneven {}, waited {} ms on average, stood 1/2/3/4+ "
                                 "refreshes {}/{}/{}/{}, 3DS loop too slow {}, made 1/2/3/4-6 "

@@ -188,6 +188,7 @@ private:
     int64_t ack_min_cur = 1000, ack_min_prev = 1000, ack_min_since = 0;
     double ack_delay_recent = 0;
     int64_t queue_cut_ms = 0;
+    int32_t acks_behind = 0;          // packets sent but not yet confirmed
     double tiles_rate_actual = 0;     // tiles: bytes per second that really go out
     int64_t tiles_rate_last_ms = 0;
     std::atomic<bool> queue_squeeze{false};
