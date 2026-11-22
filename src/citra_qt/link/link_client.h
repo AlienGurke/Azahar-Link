@@ -172,6 +172,13 @@ private:
 
     // video
     void ProcessAcks();
+    void TileSlower();
+    void TilePace();
+    int tile_div = 2;                 // tiles: a picture every tile_div-th Azahar frame
+    bool tile_held = false;           // tiles: a new picture waits for its turn
+    uint64_t tile_last_emu = 0, tile_sent_emu = 0, tile_send_emu = 0;
+    double tile_frame_bytes = 0;      // tiles: bytes per picture lately
+    int64_t tile_room_since = 0;
     void NoteAckDelay(int64_t delay, int64_t now);
     int64_t QueueDelay() const;
     // receipts: delay of each packet until confirmed (for spotting a queue in the WiFi)

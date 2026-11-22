@@ -1530,14 +1530,32 @@ void Client::VideoWorker() {
         // Azahar hands over every frame (60 a second) even if the game drew nothing new: an
         // unchanged one only gets the repairs (and every 8th the slow refresh) - the time
         // goes to the next real picture instead (the log showed pictures skipped otherwise)
+        // Steady frame rate: a new picture goes out only if it was made at least tile_div
+        // frames of Azahar after the last one sent (60/tile_div pictures a second at most,
+        // chosen to fit the WiFi, see TilePace). Measured by when the pictures were made, so
+        // a 30 fps game at "20" gets an even 15, not 2-4-2-4. A picture that comes too soon
+        // waits: the next one replaces it, or it goes out when no new one comes.
         const bool same = got_frame && frame == last_frame;
-        if (same && ++tile_same_count % 8 == 0) {
-            SendTiles(frame);
-        } else if (got_frame && !same) {
+        bool send_now = false;
+        if (got_frame && !same) {
             tile_same_count = 0;
             last_frame = frame;
+            tile_last_emu = h264_emu_frame;
+            tile_held = true;
+            const int64_t since = static_cast<int64_t>(tile_last_emu - tile_sent_emu);
+            send_now = since >= tile_div || since < 0; // (< 0: Azahar started over)
+        } else if (tile_held && got_frame) {
+            send_now = static_cast<int64_t>(h264_emu_frame - tile_sent_emu) >= 2 * tile_div;
+        }
+        if (send_now) {
+            tile_held = false;
+            tile_sent_emu = tile_last_emu;
+            tile_send_emu = tile_last_emu;
+            SendTiles(last_frame);
+            TilePace();
+        } else if (same && !tile_held && ++tile_same_count % 8 == 0) {
             SendTiles(frame);
-        } else if (!last_frame.empty()) {
+        } else if (!last_frame.empty() && !tile_held) {
             // nothing new (e.g. emulation paused): still repair lost tiles and
             // replace previews with the exact picture - but once all is exact, stop
             bool pending = false;
@@ -1582,6 +1600,51 @@ int64_t Client::QueueDelay() const {
         return 0;
     }
     return std::max<int64_t>(0, static_cast<int64_t>(ack_delay_recent) - base);
+}
+
+// The steady picture rate for tiles: 60, 30, 20, 15 or 10 a second (every tile_div-th
+// frame of Azahar). Like a console holding a frame rate: rather a steady 20 than 30 that
+// keeps dropping. Down at once when the WiFi does not keep up; up only after some seconds
+// with room to spare.
+namespace {
+constexpr int kTileDivs[] = {1, 2, 3, 4, 6};
+}
+void Client::TileSlower() {
+    for (const int d : kTileDivs) {
+        if (d > tile_div) {
+            tile_div = d;
+            break;
+        }
+    }
+    tile_room_since = NowMs();
+}
+
+void Client::TilePace() {
+    const int64_t now = NowMs();
+    // what the pictures need at this rate vs what the WiFi currently allows
+    const double need = tile_frame_bytes * (60.0 / tile_div);
+    if (need > 0.9 * budget_bytes) {
+        TileSlower();
+        return;
+    }
+    int faster = 0;
+    for (const int d : kTileDivs) {
+        if (d < tile_div) {
+            faster = d;
+        }
+    }
+    if (faster == 0) {
+        tile_room_since = now;
+        return;
+    }
+    const bool room = tile_frame_bytes * (60.0 / faster) < 0.6 * budget_bytes &&
+                      now - queue_cut_ms > 3000;
+    if (!room) {
+        tile_room_since = now;
+    } else if (now - tile_room_since > 3000) {
+        tile_div = faster;
+        tile_room_since = now;
+    }
 }
 
 // Decide for packets in flight whether the 3DS got them; lost packets get
@@ -1984,12 +2047,14 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     if (queue_squeeze.exchange(false)) {
         budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.5);
         queue_cut_ms = NowMs();
+        TileSlower();
     } else if (QueueDelay() > 50 && NowMs() - queue_cut_ms > 200) {
         // (50: receipts come with the input packets, and are looked at once a frame - that
         // alone spreads them over ~30 ms)
         budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.75);
         queue_cut_ms = NowMs();
         stats_queue_cuts++;
+        TileSlower();
     }
     const double bytes_per_sec = budget_bytes;
     // sending is paced at the data rate (no bursts for the 3DS WiFi; faster pacing went
@@ -1999,7 +2064,7 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // game (else it is late and the next one waits): bigger changes come as previews first
     // (packed with LZ4, the same bytes on the air hold that much more)
     const size_t budget = static_cast<size_t>(
-        bytes_per_sec * (tile_ts ? 1.0 / 30.0 : kMaxFrameSeconds) /
+        bytes_per_sec * (tile_ts ? tile_div / 60.0 : kMaxFrameSeconds) /
         (tile_lz4 ? std::clamp(lz4_ratio, 0.35, 1.0) : 1.0) /
         (tile_rs ? 4.0 / 3.0 : 1.0)); // the parity goes out too (a third extra)
 
@@ -2143,7 +2208,7 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     };
     if (tile_ts) {
         // when the picture was made: the 3DS shows them as evenly paced as they were made
-        uint32_t made_ms = static_cast<uint32_t>(static_cast<double>(h264_emu_frame) *
+        uint32_t made_ms = static_cast<uint32_t>(static_cast<double>(tile_send_emu) *
                                                  (4481136.0 / 268111856.0) * 1000.0) &
                            0x7FFFFFFFu;
         if (made_ms == 0) {
@@ -2281,6 +2346,9 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - send_t0)
             .count();
     stats_send_ms += took_ms;
+    if (!must.empty()) {
+        tile_frame_bytes = 0.8 * tile_frame_bytes + 0.2 * static_cast<double>(sent_bytes);
+    }
     // what really goes out per second (for cutting when a queue builds up)
     const int64_t tnow = NowMs();
     if (tiles_rate_last_ms != 0 && tnow > tiles_rate_last_ms) {
@@ -2364,13 +2432,14 @@ void Client::VideoStats(int64_t now) {
                                 "refreshes {}/{}/{}/{}, 3DS loop too slow {}, made 1/2/3/4-6 "
                                 "frames apart in Azahar {}/{}/{}/{}, Azahar pictures skipped {}, "
                                 "sending took {:.1f} ms on average ({:.1f} at most, of it {:.1f} "
-                                "making the tiles)",
+                                "making the tiles), steady rate {} pictures/s",
                                 v[18], v[19], v[20], v[10], v[11], v[12], v[14], v[15], v[16],
                                 v[17], v[13], stats_src_gaps[0], stats_src_gaps[1],
                                 stats_src_gaps[2], stats_src_gaps[3], stats_skipped,
                                 stats_frames ? stats_send_ms / stats_frames : 0.0,
                                 stats_send_max_ms,
-                                stats_frames ? stats_encode_ms / stats_frames : 0.0));
+                                stats_frames ? stats_encode_ms / stats_frames : 0.0,
+                                60 / tile_div));
             }
             if (stats_cmp_raw > 0 && tile_lz4) {
                 Log(fmt::format("video: tiles packed with LZ4 to {:.0f} % of their size ({} KB "
