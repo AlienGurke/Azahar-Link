@@ -329,6 +329,10 @@ std::string Text(const char* key) {
                          "Eingaben hoch, Bild niedrig (schnellste Eingaben; das Bild kann bei "
                          "vollem WLAN hängen)"}},
         {"wifi_prio_2", {"Buttons high, picture normal", "Eingaben hoch, Bild normal"}},
+        {"opt_tile20", {"Tiles: allow 20 fps for 30 fps games (smoother than 15, but a little "
+                        "uneven)",
+                        "Kacheln: 20 fps auch bei 30-fps-Spielen (flüssiger als 15, aber leicht "
+                        "ungleichmäßig)"}},
         {"opt_h264", {"Bottom screen as H.264 on a New 3DS (smoother)",
                       "Unteres Bild als H.264 auf dem New 3DS (flüssiger)"}},
         {"live_done", {"Save sent to the 3DS (checked)", "Spielstand an den 3DS gesendet (geprüft)"}},
@@ -1666,11 +1670,11 @@ int64_t Client::QueueDelay() const {
 namespace {
 constexpr int kTileDivs[] = {1, 2, 3, 4, 6};
 }
-// a rate that fits how the game draws: a 30 fps game gets 30, 15 or 10 (20 would be an
-// uneven 15)
+// a rate that fits how the game draws: a 30 fps game gets 30, 15 or 10 (20 is uneven there -
+// every 3rd picture left out - and only with its option)
 bool Client::TileDivFits(int d) const {
     const int cg = std::clamp(static_cast<int>(tile_content_gap + 0.5), 1, 6);
-    return d % cg == 0 || d == 6;
+    return d % cg == 0 || d == 6 || (d == 3 && option_tile20);
 }
 
 void Client::TileSlower() {
@@ -1695,6 +1699,10 @@ bool Client::TilesPending() const {
 
 void Client::TilePace() {
     const int64_t now = NowMs();
+    if (!TileDivFits(tile_div)) { // (the 20 fps option was switched off)
+        TileSlower();
+        return;
+    }
     // what the pictures need at this rate vs what the WiFi currently allows
     const double need = tile_frame_bytes * (60.0 / tile_div);
     if (need > 0.9 * budget_bytes) {

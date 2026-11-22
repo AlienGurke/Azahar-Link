@@ -91,6 +91,7 @@ public:
     /// Settings (3DS Link > Settings): what happens on every connect.
     std::atomic<bool> option_miis{true};       // take the Miis of the 3DS
     std::atomic<bool> option_system_data{true}; // take missing system data from the 3DS
+    std::atomic<bool> option_tile20{false};     // tiles: 20 a second for 30 fps games too
     std::atomic<bool> option_h264{true};        // bottom screen as H.264 on a New 3DS
     std::atomic<int> wifi_prio{0}; // picture's WiFi class: 0 video, 1 background, 2 normal
 

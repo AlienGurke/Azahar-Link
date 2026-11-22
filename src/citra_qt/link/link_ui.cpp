@@ -180,10 +180,10 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
 
     // settings: what happens on connect and when a game starts (all on by default)
     QMenu* options = menu->addMenu(Q("settings"));
-    const auto add_option = [&](const char* key, const char* name, auto apply) {
+    const auto add_option = [&](const char* key, const char* name, auto apply, bool def = true) {
         QAction* a = options->addAction(Q(key));
         a->setCheckable(true);
-        const bool on = settings->value(QString::fromLatin1(name), true).toBool();
+        const bool on = settings->value(QString::fromLatin1(name), def).toBool();
         a->setChecked(on);
         apply(on);
         connect(a, &QAction::toggled, this, [this, name, apply](bool value) {
@@ -206,6 +206,7 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
     add_option("opt_h264", "h264", [](bool on) { Get().option_h264 = on; });
+    add_option("opt_tile20", "tile20", [](bool on) { Get().option_tile20 = on; }, false);
     {
         // WiFi priority of the bottom picture (the 3DS's buttons are always the top class)
         QMenu* prio = options->addMenu(Q("wifi_prio"));
