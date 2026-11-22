@@ -238,6 +238,7 @@ void RendererOpenGL::RenderLinkCapture() {
         return;
     }
     if (link_fences[link_slot]) {
+        capture.skipped++;
         return; // the GPU is still behind; skip this frame
     }
 

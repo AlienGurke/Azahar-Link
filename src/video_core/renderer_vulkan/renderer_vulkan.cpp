@@ -1239,6 +1239,7 @@ void RendererVulkan::RenderLinkCapture() {
     }
     LinkBuffer& buf = link_buffers[link_slot];
     if (buf.pending) {
+        capture.skipped++;
         return; // the GPU is still behind; skip this frame
     }
 

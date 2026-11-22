@@ -69,6 +69,10 @@ private:
     std::vector<u16> latest;
     u64 latest_seq = 0;
     u64 latest_frame = 0;
+
+public:
+    /// Frames not read back because the GPU was still busy with earlier copies (for the log).
+    std::atomic<u64> skipped{0};
 };
 
 LinkCapture& GetLinkCapture();

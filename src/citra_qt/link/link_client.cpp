@@ -2483,7 +2483,8 @@ void Client::VideoStats(int64_t now) {
                                 "refreshes {}/{}/{}/{}, 3DS loop too slow {}, made 1/2/3/4-6 "
                                 "frames apart in Azahar {}/{}/{}/{}, Azahar pictures skipped {}, "
                                 "sending took {:.1f} ms on average ({:.1f} at most, of it {:.1f} "
-                                "making the tiles), steady rate {} pictures/s, tiles not yet exact {}",
+                                "making the tiles), steady rate {} pictures/s, tiles not yet exact "
+                                "{}, frames Azahar could not read back {}",
                                 v[18], v[19], v[20], v[10], v[11], v[12], v[14], v[15], v[16],
                                 v[17], v[13], stats_src_gaps[0], stats_src_gaps[1],
                                 stats_src_gaps[2], stats_src_gaps[3], stats_skipped,
@@ -2492,7 +2493,8 @@ void Client::VideoStats(int64_t now) {
                                 stats_frames ? stats_encode_ms / stats_frames : 0.0,
                                 60 / tile_div,
                                 std::count_if(tile_level.begin(), tile_level.end(),
-                                              [](uint8_t l) { return l != 0; })));
+                                              [](uint8_t l) { return l != 0; }),
+                                VideoCore::GetLinkCapture().skipped.exchange(0)));
             }
             if (stats_cmp_raw > 0 && tile_lz4) {
                 Log(fmt::format("video: tiles packed with LZ4 to {:.0f} % of their size ({} KB "
@@ -2547,7 +2549,9 @@ void Client::VideoStats(int64_t now) {
                     extra += fmt::format(", stood 1/2/3/4+ refreshes on the 3DS {}/{}/{}/{}", q[0],
                                          q[1], q[2], q[3]);
                 }
-                extra += fmt::format(", made 1/2/3/4-6 frames apart in Azahar {}/{}/{}/{}",
+                extra += fmt::format(", frames Azahar could not read back {}",
+                                     VideoCore::GetLinkCapture().skipped.exchange(0));
+                extra += fmt::format(", made 1/2/3/4-6 frames apart in Azahar {}/{}/{}/{}
                                      stats_src_gaps[0], stats_src_gaps[1], stats_src_gaps[2],
                                      stats_src_gaps[3]);
                 Log(fmt::format("video: 3DS shown {}, dropped (waiting for a key frame) {}, "
