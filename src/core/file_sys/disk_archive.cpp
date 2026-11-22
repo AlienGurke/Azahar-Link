@@ -3,6 +3,7 @@
 // Refer to the misc/licenses/gplv2.txt file included.
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 #include <memory>
 #include "common/archives.h"
@@ -12,19 +13,34 @@
 #include "common/string_util.h"
 #include "core/file_sys/disk_archive.h"
 #include "core/file_sys/errors.h"
+#include "video_core/renderer_base.h"
 
 SERIALIZE_EXPORT_IMPL(FileSys::DiskFile)
 SERIALIZE_EXPORT_IMPL(FileSys::DiskDirectory)
 
 namespace FileSys {
 
+namespace {
+// 3DS Link: slow accesses to the PC's disk (for the log)
+void NoteFileAccess(std::chrono::steady_clock::time_point start) {
+    const double ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (ms > 0.5) {
+        VideoCore::GetLinkPacing().FileAccess(ms);
+    }
+}
+} // namespace
+
 ResultVal<std::size_t> DiskFile::Read(const u64 offset, const std::size_t length,
                                       u8* buffer) const {
     if (!mode.read_flag)
         return ResultInvalidOpenFlags;
 
+    const auto start = std::chrono::steady_clock::now();
     file->Seek(offset, SEEK_SET);
-    return file->ReadBytes(buffer, length);
+    const std::size_t read = file->ReadBytes(buffer, length);
+    NoteFileAccess(start);
+    return read;
 }
 
 ResultVal<std::size_t> DiskFile::Write(const u64 offset, const std::size_t length, const bool flush,
@@ -32,10 +48,12 @@ ResultVal<std::size_t> DiskFile::Write(const u64 offset, const std::size_t lengt
     if (!mode.write_flag)
         return ResultInvalidOpenFlags;
 
+    const auto start = std::chrono::steady_clock::now();
     file->Seek(offset, SEEK_SET);
     std::size_t written = file->WriteBytes(buffer, length);
     if (flush)
         file->Flush();
+    NoteFileAccess(start);
     return written;
 }
 
@@ -44,13 +62,18 @@ u64 DiskFile::GetSize() const {
 }
 
 bool DiskFile::SetSize(const u64 size) const {
+    const auto start = std::chrono::steady_clock::now();
     file->Resize(size);
     file->Flush();
+    NoteFileAccess(start);
     return true;
 }
 
 bool DiskFile::Close() {
-    return file->Close();
+    const auto start = std::chrono::steady_clock::now();
+    const bool ok = file->Close();
+    NoteFileAccess(start);
+    return ok;
 }
 
 DiskDirectory::DiskDirectory(const std::string& path) {

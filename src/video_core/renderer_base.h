@@ -103,6 +103,11 @@ public:
         // new shaders and pipelines (each one compiled the first time it is needed)
         u64 shaders = 0, pipelines = 0;
         double shader_ms = 0, pipeline_ms = 0;
+        // the game's calls to system services that took over 1 ms, and file accesses on the
+        // PC's disk over 0.5 ms (both hold up the emulation where they run on its thread)
+        u64 slow_calls = 0, slow_files = 0;
+        double slow_call_ms = 0, slow_file_ms = 0, slowest_call_ms = 0;
+        std::string slowest_call;
         // speed in each whole second (100 = like the 3DS)
         double speed_min = 0, speed_max = 0;
         // pictures to the window: the longest gap, gaps off the refresh grid by over 4 ms,
@@ -115,6 +120,8 @@ public:
     void VBlank(double swap_ms);
     void Limiter(double ms);
     void Compiled(bool pipeline, double ms, bool count = true);
+    void ServiceCall(const std::string& name, double ms);
+    void FileAccess(double ms);
     void Swap(bool top);
     void Present(bool shown);
     Stats Take();
@@ -129,6 +136,9 @@ private:
     double limiter_cur = 0; // of the refresh going on
     u64 f_shaders = 0, f_pipelines = 0;
     double f_shader_ms = 0, f_pipeline_ms = 0;
+    u64 f_calls = 0, f_files = 0;
+    double f_call_ms = 0, f_file_ms = 0, f_slowest_ms = 0;
+    std::string f_slowest;
     std::vector<std::string> hitches;
     u64 hitches_dropped = 0;
     Clock::time_point since{}, last_vblank{}, last_present{}, second_start{};

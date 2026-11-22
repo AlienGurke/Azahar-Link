@@ -2546,11 +2546,18 @@ void Client::VideoStats(int64_t now) {
                 "pictures top {} bottom {}; time between refreshes over 20/25/34 ms {}/{}/{} "
                 "(longest {:.1f} ms), under 12 ms {}; a refresh on average: emulation {:.1f} ms "
                 "({:.1f} at most), drawing {:.1f} ms ({:.1f} at most, over 8 ms {}), frame "
-                "limiter waits {:.1f} ms; new shaders {} ({:.0f} ms), new pipelines {} ({:.0f} ms)",
+                "limiter waits {:.1f} ms; new shaders {} ({:.0f} ms), new pipelines {} ({:.0f} "
+                "ms); service calls over 1 ms {} ({:.0f} ms{}), disk accesses over 0.5 ms {} "
+                "({:.0f} ms)",
                 p.vblanks, p.seconds, p.speed_min, p.speed_max, p.top_swaps, p.bottom_swaps,
                 p.gaps_over_20, p.gaps_over_25, p.gaps_over_34, p.gap_max_ms, p.gaps_under_12,
                 p.emu_avg_ms, p.emu_max_ms, p.swap_avg_ms, p.swap_max_ms, p.swaps_over_8,
-                p.limiter_avg_ms, p.shaders, p.shader_ms, p.pipelines, p.pipeline_ms));
+                p.limiter_avg_ms, p.shaders, p.shader_ms, p.pipelines, p.pipeline_ms, p.slow_calls,
+                p.slow_call_ms,
+                p.slow_calls ? fmt::format(", longest {} {:.0f} ms", p.slowest_call,
+                                           p.slowest_call_ms)
+                             : std::string(),
+                p.slow_files, p.slow_file_ms));
             Log(fmt::format(
                 "azahar: to the window {} pictures, copies left out {}; 1/2/3/4+ refreshes "
                 "apart {}/{}/{}/{}, rhythm changes {}, off the refresh grid (over 4 ms) {}, "

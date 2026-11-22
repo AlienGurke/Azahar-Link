@@ -3,6 +3,7 @@
 // Refer to the misc/licenses/gplv2.txt file included.
 
 #include <algorithm>
+#include <chrono>
 #include <fmt/format.h>
 #include "common/assert.h"
 #include "common/hacks/hack_manager.h"
@@ -50,6 +51,7 @@
 #include "core/hle/service/ptm/ptm.h"
 #include "core/hle/service/pxi/pxi.h"
 #include "core/hle/service/qtm/qtm.h"
+#include "video_core/renderer_base.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/sm/srv.h"
@@ -185,7 +187,15 @@ void ServiceFrameworkBase::HandleSyncRequest(Kernel::HLERequestContext& context)
 
     LOG_TRACE(Service, "{}",
               MakeFunctionString(info->name, GetServiceName(), context.CommandBuffer()));
+    const auto call_start = std::chrono::steady_clock::now();
     handler_invoker(this, info->handler_callback, context);
+    // 3DS Link: slow calls hold up the emulation (for the log)
+    const double call_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - call_start)
+            .count();
+    if (call_ms > 1.0) {
+        VideoCore::GetLinkPacing().ServiceCall(GetServiceName() + " " + info->name, call_ms);
+    }
 }
 
 std::string ServiceFrameworkBase::GetFunctionName(IPC::Header header) const {

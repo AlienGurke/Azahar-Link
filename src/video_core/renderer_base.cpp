@@ -46,6 +46,30 @@ void LinkPacing::Compiled(bool pipeline, double ms, bool count) {
     }
 }
 
+void LinkPacing::ServiceCall(const std::string& name, double ms) {
+    std::scoped_lock lock{mutex};
+    cur.slow_calls++;
+    cur.slow_call_ms += ms;
+    if (ms > cur.slowest_call_ms) {
+        cur.slowest_call_ms = ms;
+        cur.slowest_call = name;
+    }
+    f_calls++;
+    f_call_ms += ms;
+    if (ms > f_slowest_ms) {
+        f_slowest_ms = ms;
+        f_slowest = name;
+    }
+}
+
+void LinkPacing::FileAccess(double ms) {
+    std::scoped_lock lock{mutex};
+    cur.slow_files++;
+    cur.slow_file_ms += ms;
+    f_files++;
+    f_file_ms += ms;
+}
+
 void LinkPacing::VBlank(double swap_total_ms) {
     const auto now = Clock::now();
     std::scoped_lock lock{mutex};
@@ -86,14 +110,22 @@ void LinkPacing::VBlank(double swap_total_ms) {
                     std::chrono::duration_cast<std::chrono::milliseconds>(wall.time_since_epoch())
                         .count() %
                     1000);
-                char buf[256];
+                char buf[512];
                 std::snprintf(buf, sizeof(buf),
                               "%02d:%02d:%02d.%03d refresh after %.1f ms (emulation %.1f, "
                               "drawing %.1f, frame limiter %.1f; new shaders %llu in %.1f ms, "
-                              "new pipelines %llu in %.1f ms)",
+                              "new pipelines %llu in %.1f ms; service calls over 1 ms %llu in "
+                              "%.1f ms%s%s%s; disk accesses over 0.5 ms %llu in %.1f ms)",
                               tm.tm_hour, tm.tm_min, tm.tm_sec, ms, gap, emu, swap_ms, limiter,
                               static_cast<unsigned long long>(f_shaders), f_shader_ms,
-                              static_cast<unsigned long long>(f_pipelines), f_pipeline_ms);
+                              static_cast<unsigned long long>(f_pipelines), f_pipeline_ms,
+                              static_cast<unsigned long long>(f_calls), f_call_ms,
+                              f_calls ? ", longest " : "", f_calls ? f_slowest.c_str() : "",
+                              f_calls ? (" " + std::to_string(static_cast<int>(f_slowest_ms + 0.5)) +
+                                         " ms")
+                                            .c_str()
+                                      : "",
+                              static_cast<unsigned long long>(f_files), f_file_ms);
                 hitches.emplace_back(buf);
             } else {
                 hitches_dropped++;
@@ -102,6 +134,9 @@ void LinkPacing::VBlank(double swap_total_ms) {
     }
     f_shaders = f_pipelines = 0;
     f_shader_ms = f_pipeline_ms = 0;
+    f_calls = f_files = 0;
+    f_call_ms = f_file_ms = f_slowest_ms = 0;
+    f_slowest.clear();
     last_vblank = now;
     second_vblanks++;
     const double sec = std::chrono::duration<double>(now - second_start).count();
