@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/frontend/emu_window.h"
@@ -24,26 +26,82 @@ LinkPacing& GetLinkPacing() {
     return pacing;
 }
 
-void LinkPacing::VBlank(double swap_ms) {
+void LinkPacing::Limiter(double ms) {
+    std::scoped_lock lock{mutex};
+    limiter_cur += ms;
+}
+
+void LinkPacing::Compiled(bool pipeline, double ms, bool count) {
+    std::scoped_lock lock{mutex};
+    if (pipeline) {
+        cur.pipelines += count;
+        cur.pipeline_ms += ms;
+        f_pipelines += count;
+        f_pipeline_ms += ms;
+    } else {
+        cur.shaders += count;
+        cur.shader_ms += ms;
+        f_shaders += count;
+        f_shader_ms += ms;
+    }
+}
+
+void LinkPacing::VBlank(double swap_total_ms) {
     const auto now = Clock::now();
     std::scoped_lock lock{mutex};
     if (since == Clock::time_point{}) {
         since = second_start = now;
     }
+    const double limiter = std::min(limiter_cur, swap_total_ms);
+    const double swap_ms = swap_total_ms - limiter;
+    limiter_cur = 0;
     cur.vblanks++;
     swap_sum += swap_ms;
+    limiter_sum += limiter;
     cur.swap_max_ms = std::max(cur.swap_max_ms, swap_ms);
     if (swap_ms > 8.0) {
         cur.swaps_over_8++;
     }
     if (last_vblank != Clock::time_point{}) {
         const double gap = std::chrono::duration<double, std::milli>(now - last_vblank).count();
+        const double emu = std::max(0.0, gap - swap_total_ms);
+        emu_sum += emu;
+        cur.emu_max_ms = std::max(cur.emu_max_ms, emu);
         cur.gap_max_ms = std::max(cur.gap_max_ms, gap);
         cur.gaps_over_20 += gap > 20.0;
         cur.gaps_over_25 += gap > 25.0;
         cur.gaps_over_34 += gap > 34.0;
         cur.gaps_under_12 += gap < 12.0;
+        if (gap > 22.0) {
+            if (hitches.size() < 30) {
+                const auto wall = std::chrono::system_clock::now();
+                const std::time_t t = std::chrono::system_clock::to_time_t(wall);
+                std::tm tm{};
+#ifdef _WIN32
+                localtime_s(&tm, &t);
+#else
+                localtime_r(&t, &tm);
+#endif
+                const int ms = static_cast<int>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(wall.time_since_epoch())
+                        .count() %
+                    1000);
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                              "%02d:%02d:%02d.%03d refresh after %.1f ms (emulation %.1f, "
+                              "drawing %.1f, frame limiter %.1f; new shaders %llu in %.1f ms, "
+                              "new pipelines %llu in %.1f ms)",
+                              tm.tm_hour, tm.tm_min, tm.tm_sec, ms, gap, emu, swap_ms, limiter,
+                              static_cast<unsigned long long>(f_shaders), f_shader_ms,
+                              static_cast<unsigned long long>(f_pipelines), f_pipeline_ms);
+                hitches.emplace_back(buf);
+            } else {
+                hitches_dropped++;
+            }
+        }
     }
+    f_shaders = f_pipelines = 0;
+    f_shader_ms = f_pipeline_ms = 0;
     last_vblank = now;
     second_vblanks++;
     const double sec = std::chrono::duration<double>(now - second_start).count();
@@ -87,6 +145,17 @@ void LinkPacing::Present(bool shown) {
     last_present = now;
 }
 
+std::vector<std::string> LinkPacing::TakeHitches() {
+    std::scoped_lock lock{mutex};
+    std::vector<std::string> out = std::move(hitches);
+    hitches.clear();
+    if (hitches_dropped > 0) {
+        out.push_back(std::to_string(hitches_dropped) + " more");
+        hitches_dropped = 0;
+    }
+    return out;
+}
+
 LinkPacing::Stats LinkPacing::Take() {
     const auto now = Clock::now();
     std::scoped_lock lock{mutex};
@@ -95,8 +164,10 @@ LinkPacing::Stats LinkPacing::Take() {
         out.seconds = std::chrono::duration<double>(now - since).count();
     }
     out.swap_avg_ms = cur.vblanks ? swap_sum / cur.vblanks : 0.0;
+    out.limiter_avg_ms = cur.vblanks ? limiter_sum / cur.vblanks : 0.0;
+    out.emu_avg_ms = cur.vblanks ? emu_sum / cur.vblanks : 0.0;
     cur = Stats{};
-    swap_sum = 0;
+    swap_sum = limiter_sum = emu_sum = 0;
     since = now;
     return out;
 }
@@ -206,7 +277,13 @@ void RendererBase::EndFrame() {
         }
     }
 
-    system.frame_limiter.DoFrameLimiting(system.CoreTiming().GetGlobalTimeUs());
+    {
+        const auto limit_start = std::chrono::steady_clock::now();
+        system.frame_limiter.DoFrameLimiting(system.CoreTiming().GetGlobalTimeUs());
+        GetLinkPacing().Limiter(std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - limit_start)
+                                    .count());
+    }
 
     // On fast enough devices, the time limiter sleep spans most of the 16ms period
     // between VBlank events. If an input event lands in that period, then the change

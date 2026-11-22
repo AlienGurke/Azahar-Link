@@ -8,6 +8,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <string>
 #include <vector>
 #include "common/common_types.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -92,9 +93,16 @@ public:
         // time between refreshes (the frame limiter's aim: FrameMs)
         double gap_max_ms = 0;
         u64 gaps_over_20 = 0, gaps_over_25 = 0, gaps_over_34 = 0, gaps_under_12 = 0;
-        // time the renderer took for a refresh (drawing, waiting for the GPU)
+        // time the renderer took for a refresh (drawing, waiting for the GPU) - without the
+        // frame limiter's wait, which is counted on its own
         double swap_avg_ms = 0, swap_max_ms = 0;
         u64 swaps_over_8 = 0;
+        double limiter_avg_ms = 0;
+        // the emulation between two refreshes (game code, its drawing commands)
+        double emu_avg_ms = 0, emu_max_ms = 0;
+        // new shaders and pipelines (each one compiled the first time it is needed)
+        u64 shaders = 0, pipelines = 0;
+        double shader_ms = 0, pipeline_ms = 0;
         // speed in each whole second (100 = like the 3DS)
         double speed_min = 0, speed_max = 0;
         // pictures to the window: the longest gap, gaps off the refresh grid by over 4 ms,
@@ -105,15 +113,24 @@ public:
     };
 
     void VBlank(double swap_ms);
+    void Limiter(double ms);
+    void Compiled(bool pipeline, double ms, bool count = true);
     void Swap(bool top);
     void Present(bool shown);
     Stats Take();
+    /// Lines about single refreshes that took long (at most 30 since the last call).
+    std::vector<std::string> TakeHitches();
 
 private:
     using Clock = std::chrono::steady_clock;
     std::mutex mutex;
     Stats cur;
-    double swap_sum = 0;
+    double swap_sum = 0, limiter_sum = 0, emu_sum = 0;
+    double limiter_cur = 0; // of the refresh going on
+    u64 f_shaders = 0, f_pipelines = 0;
+    double f_shader_ms = 0, f_pipeline_ms = 0;
+    std::vector<std::string> hitches;
+    u64 hitches_dropped = 0;
     Clock::time_point since{}, last_vblank{}, last_present{}, second_start{};
     u64 second_vblanks = 0;
     int last_k = 0;

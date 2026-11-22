@@ -4,9 +4,11 @@
 
 #include <boost/container/static_vector.hpp>
 
+#include <chrono>
 #include "common/alignment.h"
 #include "common/hash.h"
 #include "common/microprofile.h"
+#include "video_core/renderer_base.h"
 #include "video_core/renderer_vulkan/pica_to_vk.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -305,8 +307,13 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         pipeline_info.flags |= vk::PipelineCreateFlagBits::eFailOnPipelineCompileRequiredEXT;
     }
 
+    const auto build_start = std::chrono::steady_clock::now();
     auto result = instance.GetDevice().createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
     if (result.result == vk::Result::eSuccess) {
+        VideoCore::GetLinkPacing().Compiled(
+            true, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                            build_start)
+                      .count());
         pipeline = std::move(result.value);
     } else if (result.result == vk::Result::eErrorPipelineCompileRequiredEXT) {
         return false;

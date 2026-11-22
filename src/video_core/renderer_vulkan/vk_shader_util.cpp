@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the misc/licenses/gplv2.txt file included.
 
+#include <chrono>
 #include <memory>
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Include/ResourceLimits.h>
@@ -10,6 +11,7 @@
 #include "common/literals.h"
 #include "common/logging/log.h"
 #include "common/settings.h"
+#include "video_core/renderer_base.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Vulkan {
@@ -227,7 +229,12 @@ vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
     };
 
     try {
-        return device.createShaderModule(shader_info);
+        const auto start = std::chrono::steady_clock::now();
+        vk::ShaderModule module = device.createShaderModule(shader_info);
+        VideoCore::GetLinkPacing().Compiled(
+            false, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                       .count());
+        return module;
     } catch (vk::SystemError& err) {
         LOG_ERROR(Render_Vulkan, "{}", err.what());
     }
@@ -237,7 +244,14 @@ vk::ShaderModule CompileSPV(std::span<const u32> code, vk::Device device) {
 
 vk::ShaderModule Compile(std::string_view code, vk::ShaderStageFlagBits stage, vk::Device device,
                          std::string_view premable) {
-    return CompileSPV(CompileGLSL(code, stage, premable), device);
+    // (the GLSL -> SPIR-V time goes to the log too; CompileSPV counts the shader itself)
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<u32> spv = CompileGLSL(code, stage, premable);
+    VideoCore::GetLinkPacing().Compiled(
+        false,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+        false);
+    return CompileSPV(spv, device);
 }
 
 } // namespace Vulkan

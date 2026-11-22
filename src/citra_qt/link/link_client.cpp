@@ -2544,11 +2544,13 @@ void Client::VideoStats(int64_t now) {
             Log(fmt::format(
                 "azahar: {} refreshes in {:.1f} s (speed per second {:.1f}-{:.1f} %), game "
                 "pictures top {} bottom {}; time between refreshes over 20/25/34 ms {}/{}/{} "
-                "(longest {:.1f} ms), under 12 ms {}; renderer {:.1f} ms a refresh on average "
-                "({:.1f} at most, over 8 ms {})",
+                "(longest {:.1f} ms), under 12 ms {}; a refresh on average: emulation {:.1f} ms "
+                "({:.1f} at most), drawing {:.1f} ms ({:.1f} at most, over 8 ms {}), frame "
+                "limiter waits {:.1f} ms; new shaders {} ({:.0f} ms), new pipelines {} ({:.0f} ms)",
                 p.vblanks, p.seconds, p.speed_min, p.speed_max, p.top_swaps, p.bottom_swaps,
                 p.gaps_over_20, p.gaps_over_25, p.gaps_over_34, p.gap_max_ms, p.gaps_under_12,
-                p.swap_avg_ms, p.swap_max_ms, p.swaps_over_8));
+                p.emu_avg_ms, p.emu_max_ms, p.swap_avg_ms, p.swap_max_ms, p.swaps_over_8,
+                p.limiter_avg_ms, p.shaders, p.shader_ms, p.pipelines, p.pipeline_ms));
             Log(fmt::format(
                 "azahar: to the window {} pictures, copies left out {}; 1/2/3/4+ refreshes "
                 "apart {}/{}/{}/{}, rhythm changes {}, off the refresh grid (over 4 ms) {}, "
@@ -2556,6 +2558,9 @@ void Client::VideoStats(int64_t now) {
                 p.presents, p.copies_left_out, p.present_apart[0], p.present_apart[1],
                 p.present_apart[2], p.present_apart[3], p.present_rhythm_changes,
                 p.present_off_grid, p.present_gap_max_ms));
+        }
+        for (const std::string& h : VideoCore::GetLinkPacing().TakeHitches()) {
+            Log("azahar: long refresh " + h);
         }
     }
     if (stats_frames > 0) {
