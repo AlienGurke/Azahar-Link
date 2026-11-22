@@ -62,6 +62,25 @@ void LinkPacing::ServiceCall(const std::string& name, double ms) {
     }
 }
 
+LinkPacing::Scope::~Scope() {
+    const double ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (ms > 0.2) {
+        GetLinkPacing().Work(kind, ms);
+    }
+}
+
+void LinkPacing::Work(WorkKind kind, double ms) {
+    if (std::this_thread::get_id() != emu_thread.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    cur.work_ms[kind] += ms;
+    cur.work_n[kind]++;
+    f_work_ms[kind] += ms;
+    f_work_n[kind]++;
+}
+
 void LinkPacing::FileAccess(double ms) {
     std::scoped_lock lock{mutex};
     cur.slow_files++;
@@ -72,6 +91,7 @@ void LinkPacing::FileAccess(double ms) {
 
 void LinkPacing::VBlank(double swap_total_ms) {
     const auto now = Clock::now();
+    emu_thread.store(std::this_thread::get_id(), std::memory_order_relaxed);
     std::scoped_lock lock{mutex};
     if (since == Clock::time_point{}) {
         since = second_start = now;
@@ -110,12 +130,14 @@ void LinkPacing::VBlank(double swap_total_ms) {
                     std::chrono::duration_cast<std::chrono::milliseconds>(wall.time_since_epoch())
                         .count() %
                     1000);
-                char buf[512];
+                char buf[768];
                 std::snprintf(buf, sizeof(buf),
                               "%02d:%02d:%02d.%03d refresh after %.1f ms (emulation %.1f, "
                               "drawing %.1f, frame limiter %.1f; new shaders %llu in %.1f ms, "
                               "new pipelines %llu in %.1f ms; service calls over 1 ms %llu in "
-                              "%.1f ms%s%s%s; disk accesses over 0.5 ms %llu in %.1f ms)",
+                              "%.1f ms%s%s%s; disk accesses over 0.5 ms %llu in %.1f ms; waiting "
+                              "for the GPU %.1f ms (%llu), textures loaded %.1f ms (%llu), read "
+                              "back from the GPU %.1f ms (%llu), new surfaces %.1f ms (%llu))",
                               tm.tm_hour, tm.tm_min, tm.tm_sec, ms, gap, emu, swap_ms, limiter,
                               static_cast<unsigned long long>(f_shaders), f_shader_ms,
                               static_cast<unsigned long long>(f_pipelines), f_pipeline_ms,
@@ -125,7 +147,11 @@ void LinkPacing::VBlank(double swap_total_ms) {
                                          " ms")
                                             .c_str()
                                       : "",
-                              static_cast<unsigned long long>(f_files), f_file_ms);
+                              static_cast<unsigned long long>(f_files), f_file_ms, f_work_ms[0],
+                              static_cast<unsigned long long>(f_work_n[0]), f_work_ms[1],
+                              static_cast<unsigned long long>(f_work_n[1]), f_work_ms[2],
+                              static_cast<unsigned long long>(f_work_n[2]), f_work_ms[3],
+                              static_cast<unsigned long long>(f_work_n[3]));
                 hitches.emplace_back(buf);
             } else {
                 hitches_dropped++;
@@ -134,6 +160,10 @@ void LinkPacing::VBlank(double swap_total_ms) {
     }
     f_shaders = f_pipelines = 0;
     f_shader_ms = f_pipeline_ms = 0;
+    for (int k = 0; k < 4; k++) {
+        f_work_ms[k] = 0;
+        f_work_n[k] = 0;
+    }
     f_calls = f_files = 0;
     f_call_ms = f_file_ms = f_slowest_ms = 0;
     f_slowest.clear();

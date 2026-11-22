@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 #include "common/common_types.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -105,6 +106,9 @@ public:
         double shader_ms = 0, pipeline_ms = 0;
         // the game's calls to system services that took over 1 ms, and file accesses on the
         // PC's disk over 0.5 ms (both hold up the emulation where they run on its thread)
+        // work of the emulation thread for the GPU (see Work): time and count per kind
+        double work_ms[4] = {};
+        u64 work_n[4] = {};
         u64 slow_calls = 0, slow_files = 0;
         double slow_call_ms = 0, slow_file_ms = 0, slowest_call_ms = 0;
         std::string slowest_call;
@@ -121,6 +125,21 @@ public:
     void Limiter(double ms);
     void Compiled(bool pipeline, double ms, bool count = true);
     void ServiceCall(const std::string& name, double ms);
+    /// Work of the emulation thread for the GPU: 0 waiting for the GPU, 1 textures loaded,
+    /// 2 pictures read back from the GPU, 3 new surfaces (only that thread's, over 0.2 ms).
+    enum WorkKind { GpuWait = 0, TextureUpload = 1, Readback = 2, NewSurface = 3 };
+    void Work(WorkKind kind, double ms);
+    class Scope {
+    public:
+        explicit Scope(WorkKind k) : kind{k}, start{std::chrono::steady_clock::now()} {}
+        ~Scope();
+        Scope(const Scope&) = delete;
+        Scope& operator=(const Scope&) = delete;
+
+    private:
+        WorkKind kind;
+        std::chrono::steady_clock::time_point start;
+    };
     void FileAccess(double ms);
     void Swap(bool top);
     void Present(bool shown);
@@ -136,6 +155,9 @@ private:
     double limiter_cur = 0; // of the refresh going on
     u64 f_shaders = 0, f_pipelines = 0;
     double f_shader_ms = 0, f_pipeline_ms = 0;
+    double f_work_ms[4] = {};
+    u64 f_work_n[4] = {};
+    std::atomic<std::thread::id> emu_thread{};
     u64 f_calls = 0, f_files = 0;
     double f_call_ms = 0, f_file_ms = 0, f_slowest_ms = 0;
     std::string f_slowest;

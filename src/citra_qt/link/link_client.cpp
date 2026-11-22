@@ -2548,7 +2548,8 @@ void Client::VideoStats(int64_t now) {
                 "({:.1f} at most), drawing {:.1f} ms ({:.1f} at most, over 8 ms {}), frame "
                 "limiter waits {:.1f} ms; new shaders {} ({:.0f} ms), new pipelines {} ({:.0f} "
                 "ms); service calls over 1 ms {} ({:.0f} ms{}), disk accesses over 0.5 ms {} "
-                "({:.0f} ms)",
+                "({:.0f} ms); waiting for the GPU {:.0f} ms ({}), textures loaded {:.0f} ms ({}), "
+                "read back from the GPU {:.0f} ms ({}), new surfaces {:.0f} ms ({})",
                 p.vblanks, p.seconds, p.speed_min, p.speed_max, p.top_swaps, p.bottom_swaps,
                 p.gaps_over_20, p.gaps_over_25, p.gaps_over_34, p.gap_max_ms, p.gaps_under_12,
                 p.emu_avg_ms, p.emu_max_ms, p.swap_avg_ms, p.swap_max_ms, p.swaps_over_8,
@@ -2557,7 +2558,8 @@ void Client::VideoStats(int64_t now) {
                 p.slow_calls ? fmt::format(", longest {} {:.0f} ms", p.slowest_call,
                                            p.slowest_call_ms)
                              : std::string(),
-                p.slow_files, p.slow_file_ms));
+                p.slow_files, p.slow_file_ms, p.work_ms[0], p.work_n[0], p.work_ms[1],
+                p.work_n[1], p.work_ms[2], p.work_n[2], p.work_ms[3], p.work_n[3]));
             Log(fmt::format(
                 "azahar: to the window {} pictures, copies left out {}; 1/2/3/4+ refreshes "
                 "apart {}/{}/{}/{}, rhythm changes {}, off the refresh grid (over 4 ms) {}, "
