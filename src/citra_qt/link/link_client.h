@@ -203,12 +203,6 @@ private:
     void CalibrateColors();
     void LogRoundTrip(const std::vector<uint8_t>& out);
     bool StatsReply(std::vector<uint8_t>& out);
-    // compression test for the log (runs beside the picture, on every 3rd tile picture)
-    void ProbeCompression(const std::vector<std::vector<uint8_t>>& packets);
-    // (the counters before the future: it is destroyed first and waits for the test)
-    std::atomic<uint64_t> cmp_raw{0}, cmp_lz4{0}, cmp_z1{0}, cmp_p1{0}, cmp_p2{0}, cmp_whole{0};
-    uint32_t cmp_tick = 0;
-    std::future<void> cmp_future;
     std::future<std::vector<uint8_t>> stats_future;
     static std::string MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice,
                                bool background);

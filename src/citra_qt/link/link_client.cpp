@@ -1979,131 +1979,6 @@ int TilePayload(unsigned type) {
 }
 } // namespace
 
-// Compression test: the raw tile packets as LZ4 and zstd would pack them, and with the
-// pixels predicted first (each pixel minus a guess from its neighbours in the tile, the
-// small rests packed with zstd's entropy coding), packet by packet as they would be sent,
-// and the whole picture at once (what splitting into packets costs).
-namespace {
-uint8_t ZigZag(int d, int bits) {
-    // the rest wrapped to the channel's range, small values (+ and -) to small bytes
-    const int range = 1 << bits;
-    d = ((d % range) + range) % range;
-    if (d >= range / 2) {
-        d -= range;
-    }
-    return static_cast<uint8_t>(d >= 0 ? d * 2 : -d * 2 - 1);
-}
-
-void PredictTile(const uint8_t* raw, bool med, std::vector<uint8_t>& gp, std::vector<uint8_t>& rp,
-                 std::vector<uint8_t>& bp) {
-    int r[64], g[64], b[64];
-    for (int i = 0; i < 64; i++) {
-        uint16_t c;
-        std::memcpy(&c, raw + i * 2, 2);
-        r[i] = c >> 11;
-        g[i] = (c >> 5) & 0x3F;
-        b[i] = c & 0x1F;
-    }
-    auto guess = [&](const int* ch, int x, int y) {
-        if (x == 0 && y == 0) {
-            return 0;
-        }
-        if (y == 0) {
-            return ch[x - 1];
-        }
-        if (x == 0) {
-            return ch[(y - 1) * 8];
-        }
-        const int a = ch[y * 8 + x - 1], u = ch[(y - 1) * 8 + x], c = ch[(y - 1) * 8 + x - 1];
-        if (!med) {
-            return a;
-        }
-        // median edge detector (JPEG-LS)
-        if (c >= std::max(a, u)) {
-            return std::min(a, u);
-        }
-        if (c <= std::min(a, u)) {
-            return std::max(a, u);
-        }
-        return a + u - c;
-    };
-    for (int y = 0; y < 8; y++) {
-        for (int x = 0; x < 8; x++) {
-            const int i = y * 8 + x;
-            const int dg = g[i] - guess(g, x, y);
-            int dr = r[i] - guess(r, x, y);
-            int db = b[i] - guess(b, x, y);
-            if (med) {
-                // red and blue mostly change with green (green has one bit more)
-                dr -= dg / 2;
-                db -= dg / 2;
-            }
-            gp.push_back(ZigZag(dg, 6));
-            rp.push_back(ZigZag(dr, 5));
-            bp.push_back(ZigZag(db, 5));
-        }
-    }
-}
-} // namespace
-
-void Client::ProbeCompression(const std::vector<std::vector<uint8_t>>& packets) {
-    constexpr size_t H = sizeof(LinkFramePacket);
-    std::vector<char> lz(LZ4_compressBound(8192));
-    std::vector<uint8_t> whole;
-    uint64_t raw = 0, l4 = 0, z1 = 0, p1 = 0, p2 = 0;
-    for (const std::vector<uint8_t>& pk : packets) {
-        if (pk.size() <= H) {
-            continue;
-        }
-        const size_t n = pk.size() - H;
-        const uint8_t* d = pk.data() + H;
-        raw += n;
-        const int l = LZ4_compress_default(reinterpret_cast<const char*>(d), lz.data(),
-                                           static_cast<int>(n), static_cast<int>(lz.size()));
-        l4 += l > 0 && static_cast<size_t>(l) < n ? static_cast<size_t>(l) : n;
-        z1 += std::min(n, Common::Compression::CompressDataZSTD(std::span<const u8>(d, n), 1).size());
-        for (int v = 0; v < 2; v++) {
-            // the entries (heads and small kinds as they are), then the three planes
-            std::vector<uint8_t> rest, gp, rp, bp;
-            for (size_t off = 0; off + 2 <= n;) {
-                uint16_t head;
-                std::memcpy(&head, d + off, 2);
-                const unsigned type = head >> LINK_TILE_TYPE_SHIFT;
-                const int sz = TilePayload(type);
-                if (sz < 0 || off + 2 + sz > n) {
-                    rest.insert(rest.end(), d + off, d + n);
-                    break;
-                }
-                rest.insert(rest.end(), d + off, d + off + 2);
-                if (type == LINK_TILE_RAW) {
-                    PredictTile(d + off + 2, v == 1, gp, rp, bp);
-                } else {
-                    rest.insert(rest.end(), d + off + 2, d + off + 2 + sz);
-                }
-                off += 2 + sz;
-            }
-            rest.insert(rest.end(), gp.begin(), gp.end());
-            rest.insert(rest.end(), rp.begin(), rp.end());
-            rest.insert(rest.end(), bp.begin(), bp.end());
-            const size_t c =
-                std::min(n, Common::Compression::CompressDataZSTD(std::span<const u8>(rest), 1).size());
-            (v == 0 ? p1 : p2) += c;
-            if (v == 1) {
-                whole.insert(whole.end(), rest.begin(), rest.end());
-            }
-        }
-    }
-    if (raw == 0) {
-        return;
-    }
-    cmp_raw += raw;
-    cmp_lz4 += l4;
-    cmp_z1 += z1;
-    cmp_p1 += p1;
-    cmp_p2 += p2;
-    cmp_whole += std::min<uint64_t>(raw, Common::Compression::CompressDataZSTD(std::span<const u8>(whole), 1).size());
-}
-
 // Tiles packed with LZ4 (see LinkProto.h): each raw packet (up to about twice the size of a
 // packet) is packed; a packed packet that is still too big, or one that packing does not make
 // smaller, is split at its middle entry until every piece fits - packed or as it is.
@@ -2451,13 +2326,6 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     if (packets.empty()) {
         return;
     }
-    // how much better other packing would do (measured beside the picture, only logged)
-    if (++cmp_tick % 3 == 0 &&
-        (!cmp_future.valid() ||
-         cmp_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)) {
-        cmp_future = std::async(std::launch::async,
-                                [this, copy = packets] { ProbeCompression(copy); });
-    }
     if (tile_lz4) {
         PackTilePackets(packets, packet_tiles);
     }
@@ -2697,15 +2565,6 @@ void Client::VideoStats(int64_t now) {
                                 std::count_if(tile_level.begin(), tile_level.end(),
                                               [](uint8_t l) { return l != 0; }),
                                 VideoCore::GetLinkCapture().skipped.exchange(0)));
-            }
-            if (const uint64_t r = cmp_raw.exchange(0); r > 0) {
-                const auto pct = [r](std::atomic<uint64_t>& a) { return 100.0 * a.exchange(0) / r; };
-                const double a = pct(cmp_lz4), b = pct(cmp_z1), p1 = pct(cmp_p1), p2 = pct(cmp_p2),
-                             w = pct(cmp_whole);
-                Log(fmt::format("video: packing test (every 3rd picture, {} KB): LZ4 {:.0f} %, "
-                                "zstd {:.0f} %, predicted + zstd {:.0f} %, predicted (MED, colours) "
-                                "+ zstd {:.0f} %, the same as one block per picture {:.0f} %",
-                                r / 1024, a, b, p1, p2, w));
             }
             if (stats_cmp_raw > 0 && tile_lz4) {
                 Log(fmt::format("video: tiles packed with LZ4 to {:.0f} % of their size ({} KB "
