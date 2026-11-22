@@ -33,6 +33,7 @@ typedef int sock_t;
 #include <chrono>
 #include <ctime>
 #include <cstring>
+#include <future>
 #include <map>
 #include <span>
 
@@ -168,23 +169,32 @@ std::string Format(std::string text, const std::string& a, const std::string& b)
 }
 
 void Log(const std::string& line) {
+    // Appends (cheap): this runs in the picture's thread too, and reading and rewriting the
+    // whole file for every line took long enough to make the picture on the 3DS hitch every
+    // 10 s (when the statistics are written). Trimmed once per run.
     static std::mutex log_mutex;
+    static bool trimmed = false;
     std::scoped_lock lock{log_mutex};
     const std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/";
-    FileUtil::CreateFullPath(dir);
     const std::string path = dir + "link-log.txt";
-    std::string old;
-    if (FileUtil::Exists(path)) {
-        FileUtil::ReadFileToString(true, path, old);
-        if (old.size() > 512 * 1024) {
+    if (!trimmed) {
+        trimmed = true;
+        FileUtil::CreateFullPath(dir);
+        std::string old;
+        if (FileUtil::Exists(path) && FileUtil::ReadFileToString(true, path, old) &&
+            old.size() > 512 * 1024) {
             old.erase(0, old.size() - 256 * 1024); // keep the end
+            FileUtil::WriteStringToFile(true, path, old);
         }
     }
     const std::time_t t = std::time(nullptr);
     char stamp[32];
     std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
-    old += std::string(stamp) + "  " + line + "\n";
-    FileUtil::WriteStringToFile(true, path, old);
+    const std::string text = std::string(stamp) + "  " + line + "\n";
+    FileUtil::IOFile file(path, "ab");
+    if (file.IsOpen()) {
+        file.WriteBytes(text.data(), text.size());
+    }
 }
 
 std::string Text(const char* key) {
@@ -2403,6 +2413,29 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     stats_bytes += sent_bytes;
 }
 
+// The 3DS's statistics (LINK_CMD_VIDEOSTATS) without waiting: the request goes out in the
+// background, and its answer is used the next time (10 s later). Waiting here held up the
+// picture's thread for a round trip every 10 s.
+bool Client::StatsReply(std::vector<uint8_t>& out) {
+    bool have = false;
+    if (stats_future.valid()) {
+        if (stats_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            return false; // the last one is still on its way
+        }
+        out = stats_future.get();
+        have = !out.empty();
+    }
+    stats_future = std::async(std::launch::async, [this] {
+        uint16_t st = 0;
+        std::vector<uint8_t> o;
+        if (TryRequest(LINK_CMD_VIDEOSTATS, nullptr, 0, st, &o) == 1 && st == LINK_OK) {
+            return o;
+        }
+        return std::vector<uint8_t>{};
+    });
+    return have;
+}
+
 // the input round trip the 3DS measured (LINK_VIDCAP_ECHO), from a VIDEOSTATS answer
 void Client::LogRoundTrip(const std::vector<uint8_t>& out) {
     if (out.size() < 96) {
@@ -2462,9 +2495,8 @@ void Client::VideoStats(int64_t now) {
                                                    stats_keys, stats_key_asks, h264_bitrate / 1000)
                                      : fmt::format(", rate {:.0f} KB/s", budget_bytes / 1024)));
         if (!h264_capable) {
-            uint16_t st = 0;
             std::vector<uint8_t> out;
-            if (TryRequest(LINK_CMD_VIDEOSTATS, nullptr, 0, st, &out) == 1 && st == LINK_OK &&
+            if (StatsReply(out) &&
                 out.size() >= 80) {
                 uint32_t v[21] = {};
                 std::memcpy(v, out.data(), std::min(out.size(), sizeof(v)));
@@ -2511,9 +2543,8 @@ void Client::VideoStats(int64_t now) {
         }
         if (h264_capable) {
             // what the 3DS saw (never waits for a busy connection)
-            uint16_t st = 0;
             std::vector<uint8_t> out;
-            if (TryRequest(LINK_CMD_VIDEOSTATS, nullptr, 0, st, &out) == 1 && st == LINK_OK &&
+            if (StatsReply(out) &&
                 out.size() >= 16) {
                 uint32_t v[4];
                 std::memcpy(v, out.data(), sizeof(v));

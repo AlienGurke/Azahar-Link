@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -200,6 +201,8 @@ private:
     void VideoStats(int64_t now);
     void CalibrateColors();
     void LogRoundTrip(const std::vector<uint8_t>& out);
+    bool StatsReply(std::vector<uint8_t>& out);
+    std::future<std::vector<uint8_t>> stats_future;
     static std::string MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice,
                                bool background);
     H264Encoder h264;
