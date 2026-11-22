@@ -1412,6 +1412,15 @@ void Client::Worker(std::string host) {
                         ack_seq = pkt.videoAckSeq;
                         ack_mask = pkt.videoAckMask;
                         ack_new = true;
+                        // every confirmed seq is kept: the picture's thread may look only
+                        // every 100 ms (a big frame going out), and a receipt covers just the
+                        // last 64 packets - without this, confirmed packets counted as lost
+                        for (uint32_t d = 0; d < 64; d++) {
+                            if ((pkt.videoAckMask >> d) & 1) {
+                                const uint32_t sq = pkt.videoAckSeq - d;
+                                acked_ring[sq & (kAckRing - 1)] = sq;
+                            }
+                        }
                     }
                     if (pkt.flags & LINK_INPUT_NEEDKEY) {
                         h264_key_wanted = true;
@@ -1718,8 +1727,8 @@ void Client::ProcessAcks() {
     bool valid;
     uint32_t a_seq;
     uint64_t a_mask;
+    std::scoped_lock ring_lock{video_mutex}; // (acked_ring is filled by the input thread)
     {
-        std::scoped_lock lock{video_mutex};
         valid = ack_valid || ack_new;
         ack_valid = valid;
         ack_new = false;
@@ -1738,7 +1747,8 @@ void Client::ProcessAcks() {
         if (valid) {
             const int32_t d = static_cast<int32_t>(a_seq - p.seq);
             if (d >= 0) {
-                received = d < 64 && ((a_mask >> d) & 1);
+                received = (d < 64 && ((a_mask >> d) & 1)) ||
+                           acked_ring[p.seq & (kAckRing - 1)] == p.seq;
                 if (p.h264 || p.fec) {
                     // the 3DS may still rebuild it from the parity at the end of its frame:
                     // only lost once packets after the whole frame were confirmed
@@ -2142,7 +2152,9 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
     // game (else it is late and the next one waits): bigger changes come as previews first
     // (packed with LZ4, the same bytes on the air hold that much more)
     const size_t budget = static_cast<size_t>(
-        bytes_per_sec * (tile_ts ? tile_div / 60.0 : kMaxFrameSeconds) /
+        // (at most a 30 fps period's worth even at a lower rate: a bigger picture takes the
+        // WiFi longer than a frame, and then everything waits - the time left over sharpens)
+        bytes_per_sec * (tile_ts ? std::min(tile_div / 60.0, 1.0 / 30.0) : kMaxFrameSeconds) /
         (tile_lz4 ? std::clamp(lz4_ratio, 0.35, 1.0) : 1.0) /
         (tile_rs ? 4.0 / 3.0 : 1.0)); // the parity goes out too (a third extra)
 

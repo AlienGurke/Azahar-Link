@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -335,6 +336,8 @@ private:
     bool ack_new = false;
     bool ack_valid = false;
     uint32_t ack_seq = 0;
+    static constexpr uint32_t kAckRing = 4096; // every confirmed seq (slot = seq % size)
+    std::array<uint32_t, kAckRing> acked_ring{};
     uint64_t ack_mask = 0;
     uint8_t video_addr[16] = {}; // sockaddr_in of the 3DS video port
     std::atomic<bool> have_video_addr{false};
