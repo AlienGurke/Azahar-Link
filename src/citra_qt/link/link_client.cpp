@@ -1301,26 +1301,6 @@ void Client::Worker(std::string host) {
             h264_silent = 0;
             linkGfInit();
             video_resync = true;
-            {
-                const auto& v = Settings::values;
-                Log(fmt::format(
-                    "azahar: settings - renderer {}, resolution {}x, skip presenting duplicate "
-                    "frames {}, VSync {}, async presentation {}, async shader compilation {}, "
-                    "disk shader cache {}, limit frames ahead of GPU {}, display refresh rate "
-                    "detection {}, speed limit {:.0f} %",
-                    static_cast<int>(Settings::GetWorkingGraphicsAPI()) ==
-                            static_cast<int>(Settings::GraphicsAPI::Vulkan)
-                        ? "Vulkan"
-                        : static_cast<int>(Settings::GetWorkingGraphicsAPI()) ==
-                                  static_cast<int>(Settings::GraphicsAPI::OpenGL)
-                              ? "OpenGL"
-                              : "other",
-                    v.resolution_factor.GetValue(), v.use_skip_duplicate_frames.GetValue(),
-                    v.use_vsync.GetValue(), v.async_presentation.GetValue(),
-                    v.async_shader_compilation.GetValue(), v.use_disk_shader_cache.GetValue(),
-                    v.use_limit_frames_ahead_of_gpu.GetValue(),
-                    v.use_display_refresh_rate_detection.GetValue(), v.frame_limit.GetValue()));
-            }
             Log(std::string("video: ") + (can ? "H.264 (New 3DS hardware decoder)"
                                               : H264Encoder::Available()
                                                     ? "tiles (the 3DS has no H.264 decoder, or "
@@ -2527,6 +2507,30 @@ void Client::LogRoundTrip(const std::vector<uint8_t>& out) {
     }
 }
 
+// Azahar's video settings for the log - again whenever they change (a game's own settings
+// apply only once it runs)
+void Client::LogAzaharSettings() {
+    const auto& v = Settings::values;
+    const auto api = Settings::GetWorkingGraphicsAPI();
+    const std::string line = fmt::format(
+        "azahar: settings - renderer {}, resolution {}x, skip presenting duplicate frames {}, "
+        "VSync {}, async presentation {}, async shader compilation {}, disk shader cache {}, "
+        "limit frames ahead of GPU {}, display refresh rate detection {}, speed limit {:.0f} %, "
+        "CPU clock {} %, New 3DS {}",
+        static_cast<int>(api) == static_cast<int>(Settings::GraphicsAPI::Vulkan)   ? "Vulkan"
+        : static_cast<int>(api) == static_cast<int>(Settings::GraphicsAPI::OpenGL) ? "OpenGL"
+                                                                                    : "other",
+        v.resolution_factor.GetValue(), v.use_skip_duplicate_frames.GetValue(),
+        v.use_vsync.GetValue(), v.async_presentation.GetValue(),
+        v.async_shader_compilation.GetValue(), v.use_disk_shader_cache.GetValue(),
+        v.use_limit_frames_ahead_of_gpu.GetValue(), v.use_display_refresh_rate_detection.GetValue(),
+        v.frame_limit.GetValue(), v.cpu_clock_percentage.GetValue(), v.is_new_3ds.GetValue());
+    if (line != last_settings_line) {
+        last_settings_line = line;
+        Log(line);
+    }
+}
+
 // every 10 s a line in the log: how the bottom screen goes
 void Client::VideoStats(int64_t now) {
     if (stats_since == 0) {
@@ -2537,6 +2541,7 @@ void Client::VideoStats(int64_t now) {
     if (span < 10000) {
         return;
     }
+    LogAzaharSettings();
     {
         // how evenly Azahar itself runs (refreshes, the renderer, pictures to the window)
         const VideoCore::LinkPacing::Stats p = VideoCore::GetLinkPacing().Take();

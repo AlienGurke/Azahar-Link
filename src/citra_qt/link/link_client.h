@@ -204,6 +204,8 @@ private:
     void CalibrateColors();
     void LogRoundTrip(const std::vector<uint8_t>& out);
     bool StatsReply(std::vector<uint8_t>& out);
+    void LogAzaharSettings();
+    std::string last_settings_line;
     std::future<std::vector<uint8_t>> stats_future;
     static std::string MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voice,
                                bool background);
