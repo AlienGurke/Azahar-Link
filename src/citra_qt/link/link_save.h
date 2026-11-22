@@ -71,7 +71,9 @@ int CopySystemDataFrom3DS(std::string& message);
 std::string BackupRoot();
 
 /// Besides the newest 20 backups of a game, the first backup of each of the last
-/// `backup_days` days with backups is kept (setting, default 14).
+/// `backup_days` days with backups is kept (setting, default 7).
 extern int backup_days;
+/// How many of the newest backups of a game are kept (setting, default 3).
+extern int backup_keep;
 
 } // namespace Link

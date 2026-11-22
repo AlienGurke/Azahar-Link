@@ -265,8 +265,25 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         mode++;
     }
     {
+        // backups: how many of the newest are kept
+        backup_keep = std::max(1, settings->value(QStringLiteral("backup_keep"), 3).toInt());
+        QAction* a = options->addAction(Q("opt_backup_keep").replace(
+            QStringLiteral("%1"), QString::number(backup_keep)));
+        connect(a, &QAction::triggered, this, [this, a] {
+            bool ok = false;
+            const int n = QInputDialog::getInt(window, Q("opt_backup_keep_title"),
+                                               Q("opt_backup_keep_ask"), backup_keep, 1, 1000, 1,
+                                               &ok);
+            if (ok) {
+                backup_keep = n;
+                settings->setValue(QStringLiteral("backup_keep"), n);
+                a->setText(Q("opt_backup_keep").replace(QStringLiteral("%1"), QString::number(n)));
+            }
+        });
+    }
+    {
         // daily backups: how many days keep their first backup
-        backup_days = settings->value(QStringLiteral("backup_days"), 14).toInt();
+        backup_days = settings->value(QStringLiteral("backup_days"), 7).toInt();
         QAction* a = options->addAction(Q("opt_backup_days").replace(
             QStringLiteral("%1"), QString::number(backup_days)));
         connect(a, &QAction::triggered, this, [this, a] {

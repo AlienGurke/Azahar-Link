@@ -28,7 +28,6 @@ namespace {
 
 // Azahar's folders (see core/file_sys/archive_source_sd_savedata.cpp, archive_extsavedata.cpp)
 constexpr const char* kId = "00000000000000000000000000000000";
-constexpr size_t kKeepBackups = 20;
 
 fs::path U8(const std::string& s) {
     return fs::path(std::u8string(s.begin(), s.end()));
@@ -274,10 +273,11 @@ void PruneBackups(const fs::path& title_dir) {
         }
     }
     std::sort(dirs.begin(), dirs.end()); // names are the time: oldest first
-    // kept: the newest kKeepBackups, and the first backup of each of the last
+    // kept: the newest `backup_keep`, and the first backup of each of the last
     // `backup_days` days with a backup (names start with the date, YYYY-MM-DD)
+    const size_t keep_newest = static_cast<size_t>(std::max(1, backup_keep));
     std::vector<bool> keep(dirs.size(), false);
-    for (size_t i = dirs.size() > kKeepBackups ? dirs.size() - kKeepBackups : 0; i < dirs.size();
+    for (size_t i = dirs.size() > keep_newest ? dirs.size() - keep_newest : 0; i < dirs.size();
          i++) {
         keep[i] = true;
     }
@@ -845,7 +845,8 @@ int CopySystemDataFrom3DS(std::string& message) {
     return copied;
 }
 
-int backup_days = 14;
+int backup_days = 7;
+int backup_keep = 3;
 
 std::string BackupRoot() {
     return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/backups/";

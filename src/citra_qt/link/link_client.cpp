@@ -316,12 +316,18 @@ std::string Text(const char* key) {
         {"opt_write_ask", {"Ask before writing to the 3DS", "Vor dem Schreiben auf den 3DS fragen"}},
         {"opt_write_live", {"Also send it to the 3DS whenever the game saves",
                             "Auch bei jedem Speichern im Spiel an den 3DS senden"}},
-        {"opt_backup_days", {"Daily backups: keep %1 days...", "Tägliche Backups: %1 Tage behalten..."}},
+        {"opt_backup_keep", {"Backups: keep the newest %1...", "Backups: die neuesten %1 behalten..."}},
+        {"opt_backup_keep_title", {"Backups", "Backups"}},
+        {"opt_backup_keep_ask", {"How many of the newest backups of a game are kept:",
+                                 "Wie viele der neuesten Backups eines Spiels aufgehoben werden:"}},
+        {"opt_backup_days", {"Daily backups: keep %1 days played...",
+                             "Tägliche Backups: %1 Spieltage behalten..."}},
         {"opt_backup_days_title", {"Daily backups", "Tägliche Backups"}},
-        {"opt_backup_days_ask", {"Besides the newest 20 backups of a game, the first backup of "
-                                 "each day is kept for this many days (0 = none):",
-                                 "Neben den neuesten 20 Backups eines Spiels wird das erste "
-                                 "Backup jedes Tages so viele Tage aufgehoben (0 = keine):"}},
+        {"opt_backup_days_ask", {"Besides the newest backups, the first backup of each day the "
+                                 "game was played is kept, for this many such days (0 = none):",
+                                 "Zusätzlich zu den neuesten Backups wird das erste Backup jedes "
+                                 "Tages, an dem gespielt wurde, aufgehoben - für so viele Spieltage "
+                                 "(0 = keine):"}},
         {"wifi_prio", {"WiFi priority", "WLAN-Priorität"}},
         {"wifi_prio_0", {"Buttons high, picture medium (recommended)",
                          "Eingaben hoch, Bild mittel (empfohlen)"}},
