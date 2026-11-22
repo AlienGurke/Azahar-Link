@@ -1540,6 +1540,13 @@ void Client::VideoWorker() {
         if (got_frame && !same) {
             tile_same_count = 0;
             last_frame = frame;
+            {
+                // how many frames apart the game draws (2 = a 30 fps game)
+                const int64_t g = static_cast<int64_t>(h264_emu_frame - tile_last_emu);
+                if (g >= 1 && g <= 6) {
+                    tile_content_gap = 0.9 * tile_content_gap + 0.1 * static_cast<double>(g);
+                }
+            }
             tile_last_emu = h264_emu_frame;
             tile_held = true;
             const int64_t since = static_cast<int64_t>(tile_last_emu - tile_sent_emu);
@@ -1553,6 +1560,10 @@ void Client::VideoWorker() {
             tile_send_emu = tile_last_emu;
             SendTiles(last_frame);
             TilePace();
+        } else if (same && !tile_held && TilesPending() && NowMs() - tiles_sent_ms >= 30) {
+            // still previews (or lost tiles) on the 3DS: sharpen them at once, not only with
+            // every 8th unchanged frame (the test: coarse tiles stayed on still pictures)
+            SendTiles(frame);
         } else if (same && !tile_held && ++tile_same_count % 8 == 0) {
             SendTiles(frame);
         } else if (!last_frame.empty() && !tile_held) {
@@ -1609,14 +1620,31 @@ int64_t Client::QueueDelay() const {
 namespace {
 constexpr int kTileDivs[] = {1, 2, 3, 4, 6};
 }
+// a rate that fits how the game draws: a 30 fps game gets 30, 15 or 10 (20 would be an
+// uneven 15)
+bool Client::TileDivFits(int d) const {
+    const int cg = std::clamp(static_cast<int>(tile_content_gap + 0.5), 1, 6);
+    return d % cg == 0 || d == 6;
+}
+
 void Client::TileSlower() {
     for (const int d : kTileDivs) {
-        if (d > tile_div) {
+        if (d > tile_div && TileDivFits(d)) {
             tile_div = d;
             break;
         }
     }
     tile_room_since = NowMs();
+}
+
+// tiles the 3DS does not have exactly yet (previews, lost ones)
+bool Client::TilesPending() const {
+    for (const uint8_t l : tile_level) {
+        if (l != 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void Client::TilePace() {
@@ -1629,7 +1657,7 @@ void Client::TilePace() {
     }
     int faster = 0;
     for (const int d : kTileDivs) {
-        if (d < tile_div) {
+        if (d < tile_div && TileDivFits(d)) {
             faster = d;
         }
     }
@@ -2048,9 +2076,9 @@ void Client::SendTiles(const std::vector<uint16_t>& frame) {
         budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.5);
         queue_cut_ms = NowMs();
         TileSlower();
-    } else if (QueueDelay() > 50 && NowMs() - queue_cut_ms > 200) {
-        // (50: receipts come with the input packets, and are looked at once a frame - that
-        // alone spreads them over ~30 ms)
+    } else if (QueueDelay() > 80 && NowMs() - queue_cut_ms > 200) {
+        // (80: receipts come with the input packets, and are looked at once a frame - that
+        // alone spreads them over ~30 ms; at 50 short spikes alone cut the frame rate)
         budget_bytes = std::max(kMinRate, std::min(budget_bytes, actual) * 0.75);
         queue_cut_ms = NowMs();
         stats_queue_cuts++;
@@ -2432,14 +2460,16 @@ void Client::VideoStats(int64_t now) {
                                 "refreshes {}/{}/{}/{}, 3DS loop too slow {}, made 1/2/3/4-6 "
                                 "frames apart in Azahar {}/{}/{}/{}, Azahar pictures skipped {}, "
                                 "sending took {:.1f} ms on average ({:.1f} at most, of it {:.1f} "
-                                "making the tiles), steady rate {} pictures/s",
+                                "making the tiles), steady rate {} pictures/s, tiles not yet exact {}",
                                 v[18], v[19], v[20], v[10], v[11], v[12], v[14], v[15], v[16],
                                 v[17], v[13], stats_src_gaps[0], stats_src_gaps[1],
                                 stats_src_gaps[2], stats_src_gaps[3], stats_skipped,
                                 stats_frames ? stats_send_ms / stats_frames : 0.0,
                                 stats_send_max_ms,
                                 stats_frames ? stats_encode_ms / stats_frames : 0.0,
-                                60 / tile_div));
+                                60 / tile_div,
+                                std::count_if(tile_level.begin(), tile_level.end(),
+                                              [](uint8_t l) { return l != 0; })));
             }
             if (stats_cmp_raw > 0 && tile_lz4) {
                 Log(fmt::format("video: tiles packed with LZ4 to {:.0f} % of their size ({} KB "

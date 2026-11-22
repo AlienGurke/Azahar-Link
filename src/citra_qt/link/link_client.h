@@ -173,6 +173,9 @@ private:
     // video
     void ProcessAcks();
     void TileSlower();
+    bool TileDivFits(int d) const;
+    bool TilesPending() const;
+    double tile_content_gap = 2;      // tiles: frames between the game's pictures, lately
     void TilePace();
     int tile_div = 2;                 // tiles: a picture every tile_div-th Azahar frame
     bool tile_held = false;           // tiles: a new picture waits for its turn
