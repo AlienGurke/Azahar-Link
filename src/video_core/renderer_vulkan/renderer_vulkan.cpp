@@ -261,6 +261,11 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
             Core::PerfStats::game_frames_updated = false;
             screenRendered = true;
         }
+        if (!isSecondaryWindow) {
+            VideoCore::GetLinkPacing().Present(true);
+        }
+    } else if (!isSecondaryWindow) {
+        VideoCore::GetLinkPacing().Present(false);
     }
 }
 

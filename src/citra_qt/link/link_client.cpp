@@ -47,6 +47,7 @@ typedef int sock_t;
 #include "citra_qt/link/link_save.h"
 #include "citra_qt/link/lz4/lz4.h"
 #include "citra_qt/uisettings.h"
+#include "common/settings.h"
 #include "common/thread.h"
 #include "common/file_util.h"
 #include "core/hle/service/hid/hid.h"
@@ -1300,6 +1301,26 @@ void Client::Worker(std::string host) {
             h264_silent = 0;
             linkGfInit();
             video_resync = true;
+            {
+                const auto& v = Settings::values;
+                Log(fmt::format(
+                    "azahar: settings - renderer {}, resolution {}x, skip presenting duplicate "
+                    "frames {}, VSync {}, async presentation {}, async shader compilation {}, "
+                    "disk shader cache {}, limit frames ahead of GPU {}, display refresh rate "
+                    "detection {}, speed limit {:.0f} %",
+                    static_cast<int>(Settings::GetWorkingGraphicsAPI()) ==
+                            static_cast<int>(Settings::GraphicsAPI::Vulkan)
+                        ? "Vulkan"
+                        : static_cast<int>(Settings::GetWorkingGraphicsAPI()) ==
+                                  static_cast<int>(Settings::GraphicsAPI::OpenGL)
+                              ? "OpenGL"
+                              : "other",
+                    v.resolution_factor.GetValue(), v.use_skip_duplicate_frames.GetValue(),
+                    v.use_vsync.GetValue(), v.async_presentation.GetValue(),
+                    v.async_shader_compilation.GetValue(), v.use_disk_shader_cache.GetValue(),
+                    v.use_limit_frames_ahead_of_gpu.GetValue(),
+                    v.use_display_refresh_rate_detection.GetValue(), v.frame_limit.GetValue()));
+            }
             Log(std::string("video: ") + (can ? "H.264 (New 3DS hardware decoder)"
                                               : H264Encoder::Available()
                                                     ? "tiles (the 3DS has no H.264 decoder, or "
@@ -2515,6 +2536,27 @@ void Client::VideoStats(int64_t now) {
     const int64_t span = now - stats_since;
     if (span < 10000) {
         return;
+    }
+    {
+        // how evenly Azahar itself runs (refreshes, the renderer, pictures to the window)
+        const VideoCore::LinkPacing::Stats p = VideoCore::GetLinkPacing().Take();
+        if (p.vblanks > 0) {
+            Log(fmt::format(
+                "azahar: {} refreshes in {:.1f} s (speed per second {:.1f}-{:.1f} %), game "
+                "pictures top {} bottom {}; time between refreshes over 20/25/34 ms {}/{}/{} "
+                "(longest {:.1f} ms), under 12 ms {}; renderer {:.1f} ms a refresh on average "
+                "({:.1f} at most, over 8 ms {})",
+                p.vblanks, p.seconds, p.speed_min, p.speed_max, p.top_swaps, p.bottom_swaps,
+                p.gaps_over_20, p.gaps_over_25, p.gaps_over_34, p.gap_max_ms, p.gaps_under_12,
+                p.swap_avg_ms, p.swap_max_ms, p.swaps_over_8));
+            Log(fmt::format(
+                "azahar: to the window {} pictures, copies left out {}; 1/2/3/4+ refreshes "
+                "apart {}/{}/{}/{}, rhythm changes {}, off the refresh grid (over 4 ms) {}, "
+                "longest gap {:.1f} ms",
+                p.presents, p.copies_left_out, p.present_apart[0], p.present_apart[1],
+                p.present_apart[2], p.present_apart[3], p.present_rhythm_changes,
+                p.present_off_grid, p.present_gap_max_ms));
+        }
     }
     if (stats_frames > 0) {
         const double secs = span / 1000.0;

@@ -77,6 +77,50 @@ public:
 
 LinkCapture& GetLinkCapture();
 
+/**
+ * 3DS Link: how evenly Azahar itself runs (only for the log). Every emulated refresh
+ * (VBlank, ~59.83 a second) with the time it took the renderer, the games' buffer swaps,
+ * and every picture handed to the window (or left out as a copy).
+ */
+class LinkPacing {
+public:
+    static constexpr double FrameMs = 1000.0 * 4481136.0 / 268111856.0; // 16.713 ms
+
+    struct Stats {
+        double seconds = 0;
+        u64 vblanks = 0, top_swaps = 0, bottom_swaps = 0, presents = 0, copies_left_out = 0;
+        // time between refreshes (the frame limiter's aim: FrameMs)
+        double gap_max_ms = 0;
+        u64 gaps_over_20 = 0, gaps_over_25 = 0, gaps_over_34 = 0, gaps_under_12 = 0;
+        // time the renderer took for a refresh (drawing, waiting for the GPU)
+        double swap_avg_ms = 0, swap_max_ms = 0;
+        u64 swaps_over_8 = 0;
+        // speed in each whole second (100 = like the 3DS)
+        double speed_min = 0, speed_max = 0;
+        // pictures to the window: the longest gap, gaps off the refresh grid by over 4 ms,
+        // and changes of rhythm (e.g. 2,2,2,3 refreshes apart)
+        double present_gap_max_ms = 0;
+        u64 present_off_grid = 0, present_rhythm_changes = 0;
+        u64 present_apart[4] = {}; // 1, 2, 3, 4+ refreshes apart
+    };
+
+    void VBlank(double swap_ms);
+    void Swap(bool top);
+    void Present(bool shown);
+    Stats Take();
+
+private:
+    using Clock = std::chrono::steady_clock;
+    std::mutex mutex;
+    Stats cur;
+    double swap_sum = 0;
+    Clock::time_point since{}, last_vblank{}, last_present{}, second_start{};
+    u64 second_vblanks = 0;
+    int last_k = 0;
+};
+
+LinkPacing& GetLinkPacing();
+
 struct RendererSettings {
     // Screenshot
     std::atomic_bool screenshot_requested{false};

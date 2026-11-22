@@ -115,6 +115,7 @@ void RendererOpenGL::SwapBuffers() {
         const auto& main_layout = render_window.GetFramebufferLayout();
         RenderToMailbox(main_layout, render_window.mailbox, false);
     }
+    VideoCore::GetLinkPacing().Present(present_to_screen);
 
 #ifdef ANDROID
     // On Android, if secondary_window is defined at all,

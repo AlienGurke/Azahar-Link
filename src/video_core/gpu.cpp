@@ -2,11 +2,13 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <chrono>
 #include "common/archives.h"
 #include "common/hacks/hack_manager.h"
 #include "common/microprofile.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "core/perf_stats.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
 #include "core/hle/service/plgldr/plgldr.h"
 #include "core/loader/loader.h"
@@ -344,7 +346,12 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
         MicroProfileFlip();
         impl->system.perf_stats->EndGameFrame();
         right_eye_disabler->ReportEndFrame();
+    } else {
+        // a new bottom picture is no copy either ("Skip Presenting Duplicate Frames" looked
+        // at the top screen only: a bottom screen changing alone could stand still)
+        Core::PerfStats::game_frames_updated = true;
     }
+    VideoCore::GetLinkPacing().Swap(screen_id == 0);
 }
 
 void GPU::SetColorFill(const Pica::ColorFill& fill) {
@@ -569,7 +576,11 @@ void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
     impl->signal_interrupt(Service::GSP::InterruptId::PDC1, 0);
 
     // Present renderered frame.
+    const auto swap_start = std::chrono::steady_clock::now();
     impl->renderer->SwapBuffers();
+    VideoCore::GetLinkPacing().VBlank(
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swap_start)
+            .count());
 
     // Reschedule recurrent event
     impl->timing.ScheduleEvent(FRAME_TICKS - cycles_late, impl->vblank_event);

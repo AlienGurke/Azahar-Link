@@ -2,6 +2,8 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <algorithm>
+#include <cmath>
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/frontend/emu_window.h"
@@ -15,6 +17,88 @@ namespace VideoCore {
 LinkCapture& GetLinkCapture() {
     static LinkCapture capture;
     return capture;
+}
+
+LinkPacing& GetLinkPacing() {
+    static LinkPacing pacing;
+    return pacing;
+}
+
+void LinkPacing::VBlank(double swap_ms) {
+    const auto now = Clock::now();
+    std::scoped_lock lock{mutex};
+    if (since == Clock::time_point{}) {
+        since = second_start = now;
+    }
+    cur.vblanks++;
+    swap_sum += swap_ms;
+    cur.swap_max_ms = std::max(cur.swap_max_ms, swap_ms);
+    if (swap_ms > 8.0) {
+        cur.swaps_over_8++;
+    }
+    if (last_vblank != Clock::time_point{}) {
+        const double gap = std::chrono::duration<double, std::milli>(now - last_vblank).count();
+        cur.gap_max_ms = std::max(cur.gap_max_ms, gap);
+        cur.gaps_over_20 += gap > 20.0;
+        cur.gaps_over_25 += gap > 25.0;
+        cur.gaps_over_34 += gap > 34.0;
+        cur.gaps_under_12 += gap < 12.0;
+    }
+    last_vblank = now;
+    second_vblanks++;
+    const double sec = std::chrono::duration<double>(now - second_start).count();
+    if (sec >= 1.0) {
+        const double speed = 100.0 * second_vblanks * FrameMs / (sec * 1000.0);
+        if (cur.speed_min == 0 || speed < cur.speed_min) {
+            cur.speed_min = speed;
+        }
+        cur.speed_max = std::max(cur.speed_max, speed);
+        second_start = now;
+        second_vblanks = 0;
+    }
+}
+
+void LinkPacing::Swap(bool top) {
+    std::scoped_lock lock{mutex};
+    (top ? cur.top_swaps : cur.bottom_swaps)++;
+}
+
+void LinkPacing::Present(bool shown) {
+    const auto now = Clock::now();
+    std::scoped_lock lock{mutex};
+    if (!shown) {
+        cur.copies_left_out++;
+        return;
+    }
+    cur.presents++;
+    if (last_present != Clock::time_point{}) {
+        const double gap = std::chrono::duration<double, std::milli>(now - last_present).count();
+        cur.present_gap_max_ms = std::max(cur.present_gap_max_ms, gap);
+        const int k = std::max(1, static_cast<int>(gap / FrameMs + 0.5));
+        if (std::abs(gap - k * FrameMs) > 4.0) {
+            cur.present_off_grid++;
+        }
+        cur.present_apart[std::min(k, 4) - 1]++;
+        if (last_k != 0 && k != last_k && gap < 200.0) {
+            cur.present_rhythm_changes++;
+        }
+        last_k = gap < 200.0 ? k : 0;
+    }
+    last_present = now;
+}
+
+LinkPacing::Stats LinkPacing::Take() {
+    const auto now = Clock::now();
+    std::scoped_lock lock{mutex};
+    Stats out = cur;
+    if (since != Clock::time_point{}) {
+        out.seconds = std::chrono::duration<double>(now - since).count();
+    }
+    out.swap_avg_ms = cur.vblanks ? swap_sum / cur.vblanks : 0.0;
+    cur = Stats{};
+    swap_sum = 0;
+    since = now;
+    return out;
 }
 
 Layout::FramebufferLayout LinkCapture::MakeLayout(const Layout::FramebufferLayout& base) {
