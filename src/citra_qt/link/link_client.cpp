@@ -2572,6 +2572,15 @@ void Client::VideoStats(int64_t now) {
                 p.presents, p.copies_left_out, p.present_apart[0], p.present_apart[1],
                 p.present_apart[2], p.present_apart[3], p.present_rhythm_changes,
                 p.present_off_grid, p.present_gap_max_ms));
+            if (p.shown > 0) {
+                Log(fmt::format(
+                    "azahar: really to the screen ({}) {} pictures; 1/2/3/4+ refreshes apart "
+                    "{}/{}/{}/{}, rhythm changes {}, off the refresh grid (over 4 ms) {}, longest "
+                    "gap {:.1f} ms",
+                    p.present_mode, p.shown, p.shown_apart[0], p.shown_apart[1], p.shown_apart[2],
+                    p.shown_apart[3], p.shown_rhythm_changes, p.shown_off_grid,
+                    p.shown_gap_max_ms));
+            }
         }
         for (const std::string& h : VideoCore::GetLinkPacing().TakeHitches()) {
             Log("azahar: long refresh " + h);

@@ -221,6 +221,27 @@ std::vector<std::string> LinkPacing::TakeHitches() {
     return out;
 }
 
+void LinkPacing::Shown(const char* mode) {
+    const auto now = Clock::now();
+    std::scoped_lock lock{mutex};
+    mode_now = mode;
+    cur.shown++;
+    if (last_shown != Clock::time_point{}) {
+        const double gap = std::chrono::duration<double, std::milli>(now - last_shown).count();
+        cur.shown_gap_max_ms = std::max(cur.shown_gap_max_ms, gap);
+        const int k = std::max(1, static_cast<int>(gap / FrameMs + 0.5));
+        if (std::abs(gap - k * FrameMs) > 4.0) {
+            cur.shown_off_grid++;
+        }
+        cur.shown_apart[std::min(k, 4) - 1]++;
+        if (last_shown_k != 0 && k != last_shown_k && gap < 200.0) {
+            cur.shown_rhythm_changes++;
+        }
+        last_shown_k = gap < 200.0 ? k : 0;
+    }
+    last_shown = now;
+}
+
 LinkPacing::Stats LinkPacing::Take() {
     const auto now = Clock::now();
     std::scoped_lock lock{mutex};
@@ -231,6 +252,7 @@ LinkPacing::Stats LinkPacing::Take() {
     out.swap_avg_ms = cur.vblanks ? swap_sum / cur.vblanks : 0.0;
     out.limiter_avg_ms = cur.vblanks ? limiter_sum / cur.vblanks : 0.0;
     out.emu_avg_ms = cur.vblanks ? emu_sum / cur.vblanks : 0.0;
+    out.present_mode = mode_now;
     cur = Stats{};
     swap_sum = limiter_sum = emu_sum = 0;
     since = now;

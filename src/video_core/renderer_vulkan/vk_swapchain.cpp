@@ -8,6 +8,7 @@
 #include "common/microprofile.h"
 #include "common/settings.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_base.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 
 MICROPROFILE_DEFINE(Vulkan_Acquire, "Vulkan", "Swapchain Acquire", MP_RGB(185, 66, 245));
@@ -128,6 +129,11 @@ void Swapchain::Present() {
     };
 
     MICROPROFILE_SCOPE(Vulkan_Present);
+    VideoCore::GetLinkPacing().Shown(
+        present_mode == vk::PresentModeKHR::eImmediate ? "immediate"
+        : present_mode == vk::PresentModeKHR::eMailbox ? "mailbox"
+        : present_mode == vk::PresentModeKHR::eFifo    ? "FIFO (VSync)"
+                                                       : "other");
     try {
         [[maybe_unused]] vk::Result result = instance.GetPresentQueue().presentKHR(present_info);
     } catch (vk::OutOfDateKHRError&) {

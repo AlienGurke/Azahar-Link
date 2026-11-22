@@ -119,6 +119,13 @@ public:
         double present_gap_max_ms = 0;
         u64 present_off_grid = 0, present_rhythm_changes = 0;
         u64 present_apart[4] = {}; // 1, 2, 3, 4+ refreshes apart
+        // the same where the picture really goes to the screen (Vulkan's present call, in
+        // its own thread - with "async presentation" later than above)
+        u64 shown = 0;
+        double shown_gap_max_ms = 0;
+        u64 shown_off_grid = 0, shown_rhythm_changes = 0;
+        u64 shown_apart[4] = {};
+        std::string present_mode;
     };
 
     void VBlank(double swap_ms);
@@ -143,6 +150,8 @@ public:
     void FileAccess(double ms);
     void Swap(bool top);
     void Present(bool shown);
+    /// The picture really goes to the screen now (present thread), with the swapchain's mode.
+    void Shown(const char* mode);
     Stats Take();
     /// Lines about single refreshes that took long (at most 30 since the last call).
     std::vector<std::string> TakeHitches();
@@ -166,6 +175,9 @@ private:
     Clock::time_point since{}, last_vblank{}, last_present{}, second_start{};
     u64 second_vblanks = 0;
     int last_k = 0;
+    Clock::time_point last_shown{};
+    int last_shown_k = 0;
+    std::string mode_now;
 };
 
 LinkPacing& GetLinkPacing();
