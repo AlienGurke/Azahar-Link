@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <numeric>
 #include <boost/serialization/array.hpp>
 #include <boost/serialization/shared_ptr.hpp>
@@ -181,10 +182,12 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
     using namespace Settings::NativeButton;
 
     std::optional<ArticBaseController::ControllerData> external;
+    bool from_link = false;
     if (artic_controller.get() && artic_controller->IsReady()) {
         external = artic_controller->GetControllerData();
     } else {
         external = LinkController::Get();
+        from_link = external.has_value();
     }
 
     if (external) {
@@ -197,6 +200,40 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
 
         s16 circle_pad_x = data.c_pad_x;
         s16 circle_pad_y = data.c_pad_y;
+
+        if (from_link) {
+            // 3DS Link: the keyboard and controllers of the PC work at the same time (their
+            // buttons add to the 3DS's; their stick counts while the 3DS's circle pad rests)
+            PadState local{};
+            local.a.Assign(buttons[A - BUTTON_HID_BEGIN]->GetStatus());
+            local.b.Assign(buttons[B - BUTTON_HID_BEGIN]->GetStatus());
+            local.x.Assign(buttons[X - BUTTON_HID_BEGIN]->GetStatus());
+            local.y.Assign(buttons[Y - BUTTON_HID_BEGIN]->GetStatus());
+            local.right.Assign(buttons[Right - BUTTON_HID_BEGIN]->GetStatus());
+            local.left.Assign(buttons[Left - BUTTON_HID_BEGIN]->GetStatus());
+            local.up.Assign(buttons[Up - BUTTON_HID_BEGIN]->GetStatus());
+            local.down.Assign(buttons[Down - BUTTON_HID_BEGIN]->GetStatus());
+            local.l.Assign(buttons[L - BUTTON_HID_BEGIN]->GetStatus());
+            local.r.Assign(buttons[R - BUTTON_HID_BEGIN]->GetStatus());
+            local.start.Assign(buttons[Start - BUTTON_HID_BEGIN]->GetStatus());
+            local.select.Assign(buttons[Select - BUTTON_HID_BEGIN]->GetStatus());
+            state.hex |= local.hex;
+            constexpr int kRest = 16;
+            if (std::abs(circle_pad_x) < kRest && std::abs(circle_pad_y) < kRest) {
+                const auto [lx, ly] = circle_pad->GetStatus();
+                if (lx != 0.0f || ly != 0.0f) {
+                    constexpr int MAX_CIRCLEPAD_POS = 0x9A;
+                    circle_pad_x = static_cast<s16>(std::roundf(lx * MAX_CIRCLEPAD_POS));
+                    circle_pad_y = static_cast<s16>(std::roundf(ly * MAX_CIRCLEPAD_POS));
+                    const DirectionState direction =
+                        GetStickDirectionState(circle_pad_x, circle_pad_y);
+                    state.circle_up.Assign(direction.up);
+                    state.circle_down.Assign(direction.down);
+                    state.circle_left.Assign(direction.left);
+                    state.circle_right.Assign(direction.right);
+                }
+            }
+        }
 
         system.Movie().HandlePadAndCircleStatus(state, circle_pad_x, circle_pad_y);
 
