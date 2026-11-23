@@ -368,6 +368,8 @@ std::string Text(const char* key) {
                         "uneven)",
                         "Kacheln: 20 fps auch bei 30-fps-Spielen (flüssiger als 15, aber leicht "
                         "ungleichmäßig)"}},
+        {"opt_pc_input", {"Keyboard and controllers of the PC also work while the 3DS is connected",
+                          "Tastatur und Controller am PC auch bei verbundenem 3DS"}},
         {"opt_h264", {"Bottom screen as H.264 on a New 3DS (smoother)",
                       "Unteres Bild als H.264 auf dem New 3DS (flüssiger)"}},
         {"live_done", {"Save sent to the 3DS (checked)", "Spielstand an den 3DS gesendet (geprüft)"}},

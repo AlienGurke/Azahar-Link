@@ -40,6 +40,7 @@
 #include <QDateTime>
 #include <fmt/format.h>
 #include "core/hle/service/cfg/cfg.h"
+#include "core/hle/service/hid/hid.h"
 #include "common/file_util.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -209,6 +210,8 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
     add_option("opt_h264", "h264", [](bool on) { Get().option_h264 = on; });
+    add_option("opt_pc_input", "pc_input",
+               [](bool on) { Service::HID::LinkController::SetPcInputAllowed(on); });
     add_option("opt_tile20", "tile20", [](bool on) { Get().option_tile20 = on; }, false);
     {
         // WiFi priority of the bottom picture (the 3DS's buttons are always the top class)

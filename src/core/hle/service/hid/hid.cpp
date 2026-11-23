@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <numeric>
@@ -90,7 +91,16 @@ std::mutex link_mutex;
 ArticBaseController::ControllerData link_data{};
 std::chrono::steady_clock::time_point link_time{};
 bool link_valid = false;
+std::atomic<bool> pc_input_allowed{true};
 } // namespace
+
+void SetPcInputAllowed(bool allowed) {
+    pc_input_allowed = allowed;
+}
+
+bool PcInputAllowed() {
+    return pc_input_allowed;
+}
 
 void Set(const ArticBaseController::ControllerData& data) {
     std::scoped_lock lock{link_mutex};
@@ -187,7 +197,7 @@ void Module::UpdatePadCallback(std::uintptr_t user_data, s64 cycles_late) {
         external = artic_controller->GetControllerData();
     } else {
         external = LinkController::Get();
-        from_link = external.has_value();
+        from_link = external.has_value() && LinkController::PcInputAllowed();
     }
 
     if (external) {

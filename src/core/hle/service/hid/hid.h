@@ -245,6 +245,9 @@ namespace LinkController {
 void Set(const ArticBaseController::ControllerData& data);
 void Clear();
 std::optional<ArticBaseController::ControllerData> Get();
+/// Keyboard and controllers of the PC also count while the 3DS sends its buttons (setting).
+void SetPcInputAllowed(bool allowed);
+bool PcInputAllowed();
 } // namespace LinkController
 
 class Module final {
