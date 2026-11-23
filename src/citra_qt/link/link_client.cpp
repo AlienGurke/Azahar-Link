@@ -231,6 +231,34 @@ std::string Text(const char* key) {
     };
     static const std::map<std::string, Entry> texts = {
         {"menu", {"3DS Link", "3DS Link"}},
+        {"ask_differ", {"The saves on the PC and on the 3DS differ",
+                        "Die Spielstände am PC und auf dem 3DS sind verschieden"}},
+        {"ask_newer", {"The save on the PC is newer", "Der Spielstand am PC ist neuer"}},
+        {"ask_both", {"Both saves were changed (on the PC and on the 3DS)",
+                      "Beide Spielstände wurden geändert (am PC und auf dem 3DS)"}},
+        {"ask_pcdate", {"PC save: %1", "PC-Spielstand: %1"}},
+        {"ask_note", {"The other one is kept as a backup on the PC.",
+                      "Der andere wird am PC als Backup aufgehoben."}},
+        {"ask_usepc", {"Use the PC save (copy it to the 3DS)",
+                       "PC-Spielstand nehmen (auf den 3DS kopieren)"}},
+        {"ask_use3ds", {"Keep the 3DS save", "3DS-Spielstand behalten"}},
+        {"ask_on_3ds", {"Please answer the question on the 3DS...",
+                        "Bitte die Frage auf dem 3DS beantworten..."}},
+        {"ask_cancelled", {"The question on the 3DS was not answered (connection lost).",
+                           "Die Frage auf dem 3DS wurde nicht beantwortet (Verbindung weg)."}},
+        {"save_kept_pc", {"The PC save is kept", "Der PC-Spielstand wird behalten"}},
+        {"save_kept_pc_done", {"The PC save was kept and written to the 3DS",
+                               "Der PC-Spielstand wurde behalten und auf den 3DS geschrieben"}},
+        {"restore_no_save", {"The 3DS has no save for this game yet - start it on the 3DS once.",
+                             "Auf dem 3DS gibt es noch keinen Spielstand - das Spiel einmal auf "
+                             "dem 3DS starten."}},
+        {"restore_running", {"End the game in Azahar first", "Erst das Spiel in Azahar beenden"}},
+        {"restore_gone", {"The backup list is out of date - open it again",
+                          "Die Backup-Liste ist veraltet - bitte neu öffnen"}},
+        {"restore_done3ds", {"Backup loaded", "Backup geladen"}},
+        {"restore_done", {"Backup loaded into Azahar and onto the 3DS",
+                          "Backup in Azahar und auf den 3DS geladen"}},
+        {"restore_failed", {"Backup not loaded", "Backup nicht geladen"}},
         {"connect", {"Connect to 3DS...", "Mit 3DS verbinden..."}},
         {"disconnect", {"Disconnect", "Trennen"}},
         {"autoconnect", {"Connect automatically on start", "Beim Start automatisch verbinden"}},
@@ -532,6 +560,74 @@ void Client::SetLibrary(const std::string& text) {
     }
 }
 
+bool Client::Ask(uint32_t id, const std::string& text) {
+    {
+        std::scoped_lock lock{event_mutex};
+        if (have_answer && answer_id == id) {
+            have_answer = false;
+        }
+    }
+    std::vector<uint8_t> payload(4 + text.size());
+    std::memcpy(payload.data(), &id, 4);
+    std::memcpy(payload.data() + 4, text.data(), text.size());
+    uint16_t status = 0;
+    return Request(LINK_CMD_ASK, payload.data(), static_cast<uint32_t>(payload.size()), status) &&
+           status == LINK_OK;
+}
+
+void Client::CancelAsk(uint32_t id) {
+    uint16_t status = 0;
+    Request(LINK_CMD_ASK, &id, 4, status);
+}
+
+bool Client::TakeAnswer(uint32_t id, int& choice) {
+    std::scoped_lock lock{event_mutex};
+    if (!have_answer || answer_id != id) {
+        return false;
+    }
+    have_answer = false;
+    choice = answer_choice;
+    return true;
+}
+
+bool Client::SetStatusText(const std::string& text) {
+    uint16_t status = 0;
+    return Request(LINK_CMD_STATUSTEXT, text.data(), static_cast<uint32_t>(text.size()), status) &&
+           status == LINK_OK;
+}
+
+bool Client::SendBackupList(uint32_t token, const std::string& text) {
+    std::vector<uint8_t> payload(4 + text.size());
+    std::memcpy(payload.data(), &token, 4);
+    std::memcpy(payload.data() + 4, text.data(), text.size());
+    uint16_t status = 0;
+    return Request(LINK_CMD_BACKUPLIST, payload.data(), static_cast<uint32_t>(payload.size()),
+                   status) &&
+           status == LINK_OK;
+}
+
+bool Client::TakeBackupListRequest(std::string& path) {
+    std::scoped_lock lock{event_mutex};
+    if (!bak_list_wanted) {
+        return false;
+    }
+    bak_list_wanted = false;
+    path = bak_list_path;
+    return true;
+}
+
+bool Client::TakeRestoreRequest(std::string& path, int& index, uint32_t& token) {
+    std::scoped_lock lock{event_mutex};
+    if (!restore_wanted) {
+        return false;
+    }
+    restore_wanted = false;
+    path = restore_path;
+    index = restore_index;
+    token = restore_token;
+    return true;
+}
+
 bool Client::TakeLaunchRequest(std::string& path) {
     if (!launch_wanted.exchange(false)) {
         return false;
@@ -693,8 +789,26 @@ int Client::PollEvents() {
         Log("3DS: end the game");
     } else if (ev.type == LINK_EVENT_LIBRARY) {
         library_wanted = true;
+    } else if (ev.type == LINK_EVENT_ANSWER) {
+        std::scoped_lock lock{event_mutex};
+        have_answer = true;
+        answer_id = ev.romSize;
+        answer_choice = static_cast<int>(ev.reserved);
+    } else if (ev.type == LINK_EVENT_BACKUPS || ev.type == LINK_EVENT_RESTORE) {
+        const size_t len = std::min<size_t>(ev.romPathLen, out.size() - sizeof(ev));
+        const std::string path(reinterpret_cast<const char*>(out.data() + sizeof(ev)), len);
+        std::scoped_lock lock{event_mutex};
+        if (ev.type == LINK_EVENT_BACKUPS) {
+            bak_list_wanted = true;
+            bak_list_path = path;
+        } else {
+            restore_wanted = true;
+            restore_path = path;
+            restore_index = static_cast<int>(ev.reserved);
+            restore_token = ev.romSize;
+        }
     }
-    // other events (screenshots, backups...) are melonDS features
+    // other events (screenshots...) are melonDS features
     return 1;
 }
 

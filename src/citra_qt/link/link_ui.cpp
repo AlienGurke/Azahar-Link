@@ -4,6 +4,9 @@
 
 #include <thread>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstring>
 
 #include <QAction>
 #include <QActionGroup>
@@ -453,17 +456,55 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
     progress.setMinimumWidth(420);
     progress.show();
 
+    std::string game_title;
+    loader->ReadTitle(game_title, true);
+    if (game_title.empty()) {
+        game_title = fmt::format("{:016X}", program_id);
+    }
+
     SaveImportResult result;
+    SaveExportResult kept_write;
     QEventLoop loop;
     std::thread worker([&] {
-        result = ImportSaveFrom3DS(program_id, extdata_id, [&progress](const std::string& text) {
+        const auto show = [&progress](const std::string& text) {
             QMetaObject::invokeMethod(
                 &progress,
                 [&progress, label = QString::fromStdString(text)] {
                     progress.setLabelText(label);
                 },
                 Qt::QueuedConnection);
-        });
+        };
+        // played on the PC since the last sync: the question comes on the 3DS
+        const auto ask = [&](const std::string& question) -> int {
+            Client& c = Get();
+            static std::atomic<uint32_t> next_id{
+                static_cast<uint32_t>(QDateTime::currentMSecsSinceEpoch())};
+            const uint32_t id = next_id++;
+            show(Text("ask_on_3ds"));
+            if (!c.Ask(id, game_title + "\n\n" + question)) {
+                return 1; // no question possible: the 3DS save as always
+            }
+            const auto t0 = std::chrono::steady_clock::now();
+            while (true) {
+                int choice = 0;
+                if (c.TakeAnswer(id, choice)) {
+                    return choice == 0 ? 0 : 1;
+                }
+                if (c.GetState() != State::Connected) {
+                    return -1;
+                }
+                if (std::chrono::steady_clock::now() - t0 > std::chrono::minutes(10)) {
+                    c.CancelAsk(id); // nobody answers: the 3DS save (the PC one is a backup)
+                    return 1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        };
+        result = ImportSaveFrom3DS(program_id, extdata_id, show, ask);
+        if (result.outcome == SaveImportResult::Outcome::KeptPC) {
+            // the PC save goes to the 3DS right away (the 3DS state is in the backups)
+            kept_write = ExportSaveTo3DS(program_id, extdata_id, show, false);
+        }
         QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
     });
     loop.exec();
@@ -471,8 +512,20 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
     QCoreApplication::processEvents(); // drop the last label updates before closing
     progress.close();
 
-    const QString message = QString::fromStdString(result.message);
+    QString message = QString::fromStdString(result.message);
+    if (result.outcome == SaveImportResult::Outcome::KeptPC) {
+        if (kept_write.outcome == SaveExportResult::Outcome::Written ||
+            kept_write.outcome == SaveExportResult::Outcome::NothingToDo) {
+            message = Q("save_kept_pc_done");
+        } else {
+            QMessageBox::warning(parent, Q("write_title"),
+                                 Q("write_failed").replace(
+                                     QStringLiteral("%1"),
+                                     QString::fromStdString(kept_write.message)));
+        }
+    }
     switch (result.outcome) {
+    case SaveImportResult::Outcome::KeptPC:
     case SaveImportResult::Outcome::Imported:
         loaded_program_id = program_id; // its save may go back to the 3DS when it stops
         loaded_extdata_id = extdata_id;
@@ -602,6 +655,74 @@ void LinkUi::HandleRemote() {
         busy = true;
         stop_action->trigger();
         busy = false;
+    }
+    std::string bak_path;
+    if (client.TakeBackupListRequest(bak_path)) {
+        // the backups of a game in the 3DS list: sent from a worker
+        std::thread([this, bak_path] {
+            u64 pid = 0, ext = 0;
+            const auto loader = Loader::GetLoader(bak_path);
+            if (!loader || loader->ReadProgramId(pid) != Loader::ResultStatus::Success) {
+                pid = 0;
+            }
+            if (loader && loader->ReadExtdataId(ext) != Loader::ResultStatus::Success) {
+                ext = 0;
+            }
+            std::vector<SaveBackup> list;
+            if (pid != 0) {
+                list = ListBackups(pid);
+            }
+            if (list.size() > 14) {
+                list.resize(14); // what the 3DS shows
+            }
+            uint32_t token = 0;
+            std::string text = bak_path;
+            {
+                std::scoped_lock lock{bak_mutex};
+                token = ++bak_token;
+                bak_entries = list;
+                bak_program_id = pid;
+                bak_extdata_id = ext;
+            }
+            for (const SaveBackup& b : list) {
+                text += "\n" + b.label;
+            }
+            Get().SendBackupList(token, text);
+        }).detach();
+    }
+    int bak_index = 0;
+    uint32_t bak_tok = 0;
+    if (client.TakeRestoreRequest(bak_path, bak_index, bak_tok)) {
+        SaveBackup entry;
+        u64 pid = 0, ext = 0;
+        {
+            std::scoped_lock lock{bak_mutex};
+            if (bak_tok == bak_token && bak_index >= 0 &&
+                bak_index < static_cast<int>(bak_entries.size())) {
+                entry = bak_entries[bak_index];
+                pid = bak_program_id;
+                ext = bak_extdata_id;
+            }
+        }
+        if (system.IsPoweredOn() || live_busy || restoring || pid == 0) {
+            const std::string why = pid == 0 ? Text("restore_gone") : Text("restore_running");
+            std::thread([why] { Get().SetStatusText(why); }).detach();
+            window->statusBar()->showMessage(QString::fromStdString(why), 7000);
+        } else {
+            restoring = true;
+            std::thread([this, entry, pid, ext] {
+                const std::string err = RestoreBackup(pid, ext, entry, [](const std::string&) {});
+                Client& c = Get();
+                if (err.empty()) {
+                    c.SetStatusText(Text("restore_done3ds"));
+                    c.NotifyUser(Text("restore_done"));
+                } else {
+                    c.SetStatusText(Text("restore_failed") + ": " + err);
+                    c.NotifyUser(Text("restore_failed") + ": " + err);
+                }
+                restoring = false;
+            }).detach();
+        }
     }
     std::string path;
     if (client.TakeLaunchRequest(path)) {

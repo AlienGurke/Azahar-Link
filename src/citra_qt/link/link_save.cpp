@@ -853,7 +853,8 @@ std::string BackupRoot() {
 }
 
 SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
-                                   const std::function<void(const std::string&)>& progress) {
+                                   const std::function<void(const std::string&)>& progress,
+                                   const std::function<int(const std::string&)>& ask) {
     SaveImportResult result;
     Client& client = Get();
     const u32 high = static_cast<u32>(program_id >> 32);
@@ -961,6 +962,65 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
         return result;
     }
 
+    // --- 1b. played on the PC since the saves were last the same? The cache is what the 3DS
+    // had then (after every load and every write). Then the user decides. ---
+    bool keep_pc = false;
+    Tree pc_now, pc_now_ext;
+    if (ask && LoadFolder(save_dir, pc_now) && !pc_now.files.empty()) {
+        const bool with_ext = ext_found > 0 && LoadFolder(ext_dir / "user", pc_now_ext);
+        const auto same = [](const Tree& a, const Tree& b) {
+            return SameListing(ListingOf(a), ListingOf(b));
+        };
+        u32 last_media = 0;
+        bool last_has_ext = false;
+        Tree last, last_ext;
+        const bool have_last = ReadCacheInfo(cache, last_media, last_has_ext) &&
+                               LoadFolder(cache / "save", last) &&
+                               (!last_has_ext || LoadFolder(cache / "extdata", last_ext));
+        const bool ext_counts = with_ext && last_has_ext;
+        const bool pc_unchanged =
+            have_last && same(pc_now, last) && (!ext_counts || same(pc_now_ext, last_ext));
+        if (!pc_unchanged) {
+            const bool ds_unchanged =
+                have_last && same(save, last) && (!ext_counts || same(ext, last_ext));
+            // when the PC save was last written
+            std::string when = "?";
+            std::error_code ec;
+            fs::file_time_type newest{};
+            for (auto it = fs::recursive_directory_iterator(save_dir, ec);
+                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                newest = std::max(newest, it->last_write_time(ec));
+            }
+            if (newest != fs::file_time_type{}) {
+                const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                    newest - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                const std::time_t t = std::chrono::system_clock::to_time_t(sys);
+                std::tm tm{};
+#ifdef _WIN32
+                localtime_s(&tm, &t);
+#else
+                localtime_r(&t, &tm);
+#endif
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M", &tm);
+                when = buf;
+            }
+            const std::string question =
+                Text(!have_last ? "ask_differ" : ds_unchanged ? "ask_newer" : "ask_both") + "\n" +
+                Format(Text("ask_pcdate"), when) + "\n\n" + Text("ask_note") + "\n" +
+                Text("ask_usepc") + "\n" + Text("ask_use3ds");
+            Log(fmt::format("save: PC save changed since the last sync ({})",
+                            !have_last ? "no record" : ds_unchanged ? "3DS unchanged" : "both"));
+            const int choice = ask(question);
+            if (choice < 0) {
+                result.message = Text("ask_cancelled");
+                return result;
+            }
+            keep_pc = choice == 0;
+            Log(std::string("save: the user chose the ") + (keep_pc ? "PC save" : "3DS save"));
+        }
+    }
+
     const fs::path title_backups = U8(BackupRoot() + tid);
     const fs::path backup = title_backups / U8(NowName());
     std::error_code ec;
@@ -985,6 +1045,33 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
         return result;
     }
     result.backup_dir = FromPath(backup);
+
+    // the copy for next time (only read again what changed on the 3DS) - also the base
+    // a write to the 3DS checks against
+    const auto write_cache = [&] {
+        for (const auto& [tree, name, ok] :
+             {std::tuple{&save, "save", true}, std::tuple{&ext, "extdata", ext_found > 0}}) {
+            const fs::path dst = cache / name;
+            fs::path tmp = dst;
+            tmp += U8(".new");
+            fs::remove_all(tmp, ec);
+            if (!ok || !WriteTree(*tree, tmp) || !SwapIn(tmp, dst)) {
+                fs::remove_all(tmp, ec);
+                fs::remove_all(dst, ec); // never keep a cache that may not match
+            }
+        }
+        WriteCacheInfo(cache, save_media, ext_found > 0);
+    };
+    if (keep_pc) {
+        // Azahar keeps its save; the 3DS state is the base for writing it there
+        write_cache();
+        PruneBackups(title_backups);
+        result.outcome = SaveImportResult::Outcome::KeptPC;
+        result.message = Text("save_kept_pc");
+        Log(fmt::format("save: PC save kept after {:.1f} s, backup {}", seconds(),
+                        result.backup_dir));
+        return result;
+    }
 
     // --- 3. into Azahar: written next to the old files first, then swapped ---
     progress(Text("save_writing"));
@@ -1043,20 +1130,7 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
         }
     }
 
-    // the copy for next time (only read again what changed on the 3DS)
-    for (const auto& [tree, name, ok] :
-         {std::tuple{&save, "save", true}, std::tuple{&ext, "extdata", ext_found > 0}}) {
-        const fs::path dst = cache / name;
-        fs::path tmp = dst;
-        tmp += U8(".new");
-        fs::remove_all(tmp, ec);
-        if (!ok || !WriteTree(*tree, tmp) || !SwapIn(tmp, dst)) {
-            fs::remove_all(tmp, ec);
-            fs::remove_all(dst, ec); // never keep a cache that may not match
-        }
-    }
-
-    WriteCacheInfo(cache, save_media, ext_found > 0);
+    write_cache();
     PruneBackups(title_backups);
     Log(fmt::format("save: done after {:.1f} s, backup {}", seconds(), result.backup_dir));
     result.outcome = SaveImportResult::Outcome::Imported;
@@ -1064,6 +1138,127 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     result.message = Format(Text(ext_found > 0 ? "save_done_ext" : "save_done"),
                             std::to_string(kb));
     return result;
+}
+
+std::vector<SaveBackup> ListBackups(u64 program_id) {
+    std::vector<SaveBackup> out;
+    const fs::path root = U8(BackupRoot() + fmt::format("{:016X}", program_id));
+    std::error_code ec;
+    std::vector<fs::path> dirs;
+    for (const auto& e : fs::directory_iterator(root, ec)) {
+        if (e.is_directory()) {
+            dirs.push_back(e.path());
+        }
+    }
+    std::sort(dirs.rbegin(), dirs.rend()); // names are the time: newest first
+    // in each backup, the newer state first
+    struct Kind {
+        const char* save;
+        const char* ext;
+        const char* where;
+    };
+    static constexpr Kind kKinds[] = {
+        {"pc-save-written", "pc-extdata-written/user", "PC -> 3DS"},
+        {"3ds-save-before", "3ds-extdata-before/user", "3DS"},
+        {"3ds-save", "3ds-extdata/user", "3DS"},
+        {"pc-save", "pc-extdata/user", "PC"},
+    };
+    std::vector<uint64_t> seen;
+    for (const fs::path& dir : dirs) {
+        const std::string name = dir.filename().string(); // YYYY-MM-DD_HH-MM-SS[-to-3ds]
+        std::string when = name;
+        if (name.size() >= 16) {
+            when = name.substr(8, 2) + "." + name.substr(5, 2) + "." + name.substr(0, 4) + " " +
+                   name.substr(11, 2) + ":" + name.substr(14, 2);
+        }
+        for (const Kind& k : kKinds) {
+            Tree t;
+            if (!LoadFolder(dir / k.save, t) || t.files.empty()) {
+                continue;
+            }
+            uint64_t h = LINK_FNV64_INIT;
+            for (const auto& [path, data] : t.files) {
+                h = (h ^ Fnv64(std::vector<uint8_t>(path.begin(), path.end()))) * LINK_FNV64_PRIME;
+                h = (h ^ Fnv64(data)) * LINK_FNV64_PRIME;
+            }
+            if (std::find(seen.begin(), seen.end(), h) != seen.end()) {
+                continue; // the same save as a newer entry
+            }
+            seen.push_back(h);
+            SaveBackup b;
+            b.save_dir = FromPath(dir / k.save);
+            if (fs::is_directory(dir / U8(k.ext), ec)) {
+                b.ext_dir = FromPath(dir / U8(k.ext));
+            }
+            b.label = when + "  " + k.where;
+            out.push_back(std::move(b));
+        }
+    }
+    return out;
+}
+
+std::string RestoreBackup(u64 program_id, u64 extdata_id, const SaveBackup& backup,
+                          const std::function<void(const std::string&)>& progress) {
+    const u32 high = static_cast<u32>(program_id >> 32);
+    const u32 low = static_cast<u32>(program_id & 0xFFFFFFFF);
+    const u32 ext_id = extdata_id != 0 ? static_cast<u32>(extdata_id) : low >> 8;
+    Log(fmt::format("restore: {:016X} from {}", program_id, backup.save_dir));
+    Tree save, ext;
+    if (!LoadFolder(U8(backup.save_dir), save) || save.files.empty() ||
+        (!backup.ext_dir.empty() && !LoadFolder(U8(backup.ext_dir), ext))) {
+        return Format(Text("save_write_failed"), backup.save_dir);
+    }
+    // 1. what the 3DS has now: into Azahar and the backups, and the base for writing
+    const SaveImportResult r = ImportSaveFrom3DS(program_id, extdata_id, progress);
+    if (r.outcome == SaveImportResult::Outcome::NoSave) {
+        return Text("restore_no_save");
+    }
+    if (r.outcome != SaveImportResult::Outcome::Imported) {
+        return r.message;
+    }
+    // 2. the backup into Azahar (written next to the old files, then swapped)
+    const std::string sdmc = FileUtil::GetUserPath(FileUtil::UserPath::SDMCDir);
+    const fs::path save_dir =
+        U8(fmt::format("{}Nintendo 3DS/{}/{}/title/{:08x}/{:08x}/data/00000001", sdmc, kId, kId,
+                       high, low));
+    const fs::path ext_dir =
+        U8(fmt::format("{}Nintendo 3DS/{}/{}/extdata/00000000/{:08x}", sdmc, kId, kId, ext_id));
+    std::error_code ec;
+    fs::path save_new = save_dir;
+    save_new += U8(".3dslink-new");
+    fs::remove_all(save_new, ec);
+    if (!WriteTree(save, save_new) || !SwapIn(save_new, save_dir)) {
+        fs::remove_all(save_new, ec);
+        return Format(Text("save_write_failed"), FromPath(save_dir));
+    }
+    if (!backup.ext_dir.empty() && fs::is_directory(ext_dir, ec)) {
+        fs::path ext_new = ext_dir;
+        ext_new += U8(".3dslink-new");
+        fs::remove_all(ext_new, ec);
+        bool ok = WriteTree(ext, ext_new / "user");
+        for (const char* keep : {"metadata", "icon"}) {
+            if (ok && fs::exists(ext_dir / keep)) {
+                fs::copy_file(ext_dir / keep, ext_new / keep, fs::copy_options::overwrite_existing,
+                              ec);
+                ok = !ec;
+            }
+        }
+        if (ok && fs::exists(ext_dir / "boss")) {
+            ok = CopyFolder(ext_dir / "boss", ext_new / "boss");
+        }
+        if (!ok || !SwapIn(ext_new, ext_dir)) {
+            fs::remove_all(ext_new, ec);
+            return Format(Text("save_write_failed"), FromPath(ext_dir));
+        }
+    }
+    // 3. to the 3DS (checked like every write)
+    const SaveExportResult w = ExportSaveTo3DS(program_id, extdata_id, progress, false);
+    if (w.outcome == SaveExportResult::Outcome::Written ||
+        w.outcome == SaveExportResult::Outcome::NothingToDo) {
+        Log("restore: done");
+        return "";
+    }
+    return w.message;
 }
 
 } // namespace Link

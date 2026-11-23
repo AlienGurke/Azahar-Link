@@ -17,6 +17,8 @@
 #include <map>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <vector>
 #include "citra_qt/link/link_save.h"
 
 class GameList;
@@ -84,6 +86,12 @@ private:
     // the game that runs, if its save came from the 3DS
     static u64 loaded_program_id;
     static u64 loaded_extdata_id;
+    // save backups the 3DS asked for (list sent with a token; a restore names its index)
+    std::mutex bak_mutex;
+    uint32_t bak_token = 0;
+    std::vector<SaveBackup> bak_entries;
+    u64 bak_program_id = 0, bak_extdata_id = 0;
+    std::atomic<bool> restoring{false};
     // messages are shown one after the other, each for a few seconds
     QStringList queued;
     qint64 shown_until = 0;

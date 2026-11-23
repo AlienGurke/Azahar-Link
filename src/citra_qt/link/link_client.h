@@ -82,6 +82,24 @@ public:
     void ResendLibrary() {
         library_dirty = true;
     }
+    /// A question on the 3DS (lines, the last two are the labels for A and B); the answer
+    /// comes with TakeAnswer (0 = A, 1 = B). Blocking request, call it from a worker.
+    bool Ask(uint32_t id, const std::string& text);
+    void CancelAsk(uint32_t id);
+    bool TakeAnswer(uint32_t id, int& choice);
+    /// A text in the status line of the 3DS app.
+    bool SetStatusText(const std::string& text);
+    /// The list of save backups for the 3DS (ROM path, then one line per backup).
+    bool SendBackupList(uint32_t token, const std::string& text);
+    /// A message for the status bar of Azahar (from any thread).
+    void NotifyUser(const std::string& msg) {
+        PushMessage(msg);
+    }
+    /// The 3DS asks for the save backups of a game (its path in the game list); once.
+    bool TakeBackupListRequest(std::string& path);
+    /// The 3DS wants a backup back: path, index in the list sent with `token`; once.
+    bool TakeRestoreRequest(std::string& path, int& index, uint32_t& token);
+
     /// A pick from the 3DS did not start a game (cancelled or failed): the 3DS stops waiting.
     void LaunchFailed() {
         launch_failed = true;
@@ -295,6 +313,16 @@ private:
     std::atomic<bool> launch_wanted{false};
     std::atomic<bool> stop_game_wanted{false};
     std::atomic<bool> library_wanted{false};
+    std::mutex event_mutex; // answers and backup requests from the 3DS
+    bool have_answer = false;
+    uint32_t answer_id = 0;
+    int answer_choice = 0;
+    bool bak_list_wanted = false;
+    std::string bak_list_path;
+    bool restore_wanted = false;
+    std::string restore_path;
+    int restore_index = 0;
+    uint32_t restore_token = 0;
     void SendLibrary();
     void SendSession();
 

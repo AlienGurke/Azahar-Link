@@ -13,6 +13,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -21,6 +22,7 @@ namespace Link {
 struct SaveImportResult {
     enum class Outcome {
         Imported,  // save (and extdata, if any) taken from the 3DS
+        KeptPC,    // the user chose the PC save: Azahar keeps it, it goes to the 3DS next
         NoSave,    // the 3DS has no save for this title: nothing changed
         Failed,    // something went wrong: Azahar's save is unchanged
     };
@@ -31,8 +33,26 @@ struct SaveImportResult {
 
 /// Blocking: call it from a worker thread. `progress` gets short texts for the user.
 /// `extdata_id`: from the game's header (0 = unknown: guessed from the title id).
+/// `ask`: when Azahar's save changed since it was last the same as the 3DS's (played on the
+/// PC), or there is no record of that, it gets a question for the user (lines, the last
+/// two the choices) and returns 0 = keep the PC save, 1 = take the 3DS save, -1 = cancel.
+/// Without it the 3DS save is taken.
 SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
-                                   const std::function<void(const std::string&)>& progress);
+                                   const std::function<void(const std::string&)>& progress,
+                                   const std::function<int(const std::string&)>& ask = {});
+
+/// A save backup that can go back (to Azahar and the 3DS).
+struct SaveBackup {
+    std::string save_dir;  // the save files
+    std::string ext_dir;   // the extdata files ("user"), empty if the backup has none
+    std::string label;     // for the list on the 3DS: date, time, where it came from
+};
+/// The backups of a game, newest first, each save only once.
+std::vector<SaveBackup> ListBackups(u64 program_id);
+/// Puts a backup back: the 3DS's save is loaded first (and kept as a backup), then the
+/// backup goes into Azahar and is written to the 3DS. Blocking. Empty = done, else why not.
+std::string RestoreBackup(u64 program_id, u64 extdata_id, const SaveBackup& backup,
+                          const std::function<void(const std::string&)>& progress);
 
 struct SaveExportResult {
     enum class Outcome {
