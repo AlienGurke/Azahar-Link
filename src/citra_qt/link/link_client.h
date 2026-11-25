@@ -341,6 +341,7 @@ private:
 
     std::atomic<bool> video_wanted{true}; // bottom screen picture on (3DS setting)
     std::atomic<bool> lid_closed{false};  // closed: nobody sees the picture
+    std::atomic<bool> idle{false};        // melonDS is the active emulator on the 3DS
     std::atomic<bool> video_resync{true}; // resend everything (new connection)
 
     // video: what the 3DS should show

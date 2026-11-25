@@ -769,7 +769,8 @@ Client::ConsoleState Client::GetConsoleState() {
 
 // the renderer only draws the extra picture while someone looks at it
 void Client::UpdateCapture() {
-    const bool on = state.load() == State::Connected && video_wanted.load() && !lid_closed.load();
+    const bool on = state.load() == State::Connected && video_wanted.load() && !lid_closed.load() &&
+                    !idle.load();
     VideoCore::GetLinkCapture().SetEnabled(on);
 }
 
@@ -1412,6 +1413,7 @@ void Client::Worker(std::string host) {
         std::memcpy(&hello, resp.data(), sizeof(hello));
         video_wanted = (hello.flags & LINK_HELLO_VIDEO_OFF) == 0;
         lid_closed = false;
+        idle = false;
         {
             std::scoped_lock lock{console_mutex};
             console.lid_closed = false;
@@ -1546,6 +1548,19 @@ void Client::Worker(std::string host) {
                     if (pkt.magic != LINK_MAGIC) {
                         continue;
                     }
+                    // melonDS is the active emulator on the 3DS: no buttons, no picture, no
+                    // echo - only the state of the console
+                    const bool now_idle = (pkt.flags & LINK_INPUT_IDLE) != 0;
+                    if (now_idle != idle.load()) {
+                        idle = now_idle;
+                        capture_dirty = true; // the connection thread updates the capture
+                        if (!now_idle) {
+                            video_resync = true; // the 3DS shows our picture again: all of it
+                            h264_force_key = true;
+                        }
+                        Log(now_idle ? "3DS: melonDS is the active emulator - Azahar waits"
+                                     : "3DS: Azahar is the active emulator again");
+                    }
                     bool closed_now = false;
                     {
                         std::scoped_lock lock{console_mutex};
@@ -1582,6 +1597,10 @@ void Client::Worker(std::string host) {
                             input_gaps++;
                         }
                         input_count++;
+                    }
+                    if (now_idle) {
+                        Service::HID::LinkController::Clear(); // the PC's own controls still work
+                        continue;
                     }
                     Service::HID::ArticBaseController::ControllerData data{};
                     data.index = pkt.id;
@@ -1635,8 +1654,9 @@ void Client::Worker(std::string host) {
         while (!stop_requested) {
             const int64_t t = NowMs();
             if (t - last_hello >= 1000) {
-                const uint32_t helo = LINK_UDP_HELLO;
-                sendto(us, reinterpret_cast<const char*>(&helo), sizeof(helo), 0,
+                // + who we are: with melonDS connected too, the 3DS tells the two apart
+                const uint32_t helo[2] = {LINK_UDP_HELLO, LINK_CLIENT_AZAHAR};
+                sendto(us, reinterpret_cast<const char*>(helo), sizeof(helo), 0,
                        reinterpret_cast<sockaddr*>(&udp_addr), sizeof(udp_addr));
                 last_hello = t;
             }
@@ -1716,7 +1736,7 @@ void Client::VideoWorker() {
                                   0x7FFFFFFFu;
             emu_clock_off = static_cast<uint32_t>(NowMs()) - made;
         }
-        if (!have_video_addr || !video_wanted || lid_closed) {
+        if (!have_video_addr || !video_wanted || lid_closed || idle) {
             continue;
         }
         // statistics: how many frames apart the picture changes
