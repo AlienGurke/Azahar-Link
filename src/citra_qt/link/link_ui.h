@@ -4,7 +4,7 @@
 
 // 3DS Link in Azahar's main window: the "3DS Link" menu, a status bar entry
 // and the messages of the client. Its settings live in their own file
-// (3ds-link.ini in Azahar's config folder), so Azahar's config stays untouched.
+// (azahar-link.ini in Azahar's config folder), so Azahar's config stays untouched.
 
 #pragma once
 

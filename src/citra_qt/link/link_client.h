@@ -382,7 +382,12 @@ private:
 
 Client& Get();
 
-/// A line in <user>/3ds-link/link-log.txt (what the link did, for finding problems).
+/// The link's folder <user>/Azahar-Link/ (or a folder in it, e.g. "Backups"), with '/' at
+/// the end. Same layout as melonDS-Link: Backups, Debug (log), Sync. The first call moves
+/// the old <user>/3ds-link over (renaming, nothing copied or deleted).
+std::string LinkDir(const std::string& sub = {});
+
+/// A line in <user>/Azahar-Link/Debug/link-log.txt (what the link did, for finding problems).
 void Log(const std::string& line);
 
 /// A text in the language of Azahar's interface (German or English).

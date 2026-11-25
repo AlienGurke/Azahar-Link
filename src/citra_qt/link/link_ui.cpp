@@ -115,8 +115,14 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         connect(game_list, &GameList::PopulatingCompleted, this, [this] { UpdateLibrary(); });
         QTimer::singleShot(0, this, [this] { UpdateLibrary(); }); // in case it is done already
     }
-    const std::string path =
-        FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir) + "3ds-link.ini";
+    // the link's settings (azahar-link.ini, before: 3ds-link.ini - renamed once)
+    const std::string config_dir = FileUtil::GetUserPath(FileUtil::UserPath::ConfigDir);
+    const std::string path = config_dir + "azahar-link.ini";
+    if (!FileUtil::Exists(path) && FileUtil::Exists(config_dir + "3ds-link.ini")) {
+        const bool ok = FileUtil::Rename(config_dir + "3ds-link.ini", path);
+        Link::Log(std::string("folder: config/3ds-link.ini -> azahar-link.ini: ") +
+                  (ok ? "ok" : "failed"));
+    }
     settings = new QSettings(QString::fromStdString(path), QSettings::IniFormat, this);
 
     // the menu goes right before "Help"

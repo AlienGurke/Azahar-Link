@@ -580,8 +580,7 @@ SaveExportResult ExportSaveTo3DS(u64 program_id, u64 extdata_id,
     } log_result{result};
 
     // what the 3DS had when it was loaded (the cache), and what Azahar has now
-    const fs::path cache = U8(FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
-                              "3ds-link/cache/" + tid);
+    const fs::path cache = U8(LinkDir("Sync") + tid);
     u32 media = LINK_MEDIA_SD;
     bool has_ext = false;
     Tree base_save, base_ext;
@@ -849,7 +848,7 @@ int backup_days = 7;
 int backup_keep = 3;
 
 std::string BackupRoot() {
-    return FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/backups/";
+    return LinkDir("Backups");
 }
 
 SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
@@ -873,8 +872,7 @@ SaveImportResult ImportSaveFrom3DS(u64 program_id, u64 extdata_id,
     } log_result{result};
 
     // --- 1. read everything from the 3DS (nothing is written there) ---
-    const fs::path cache = U8(FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
-                              "3ds-link/cache/" + tid);
+    const fs::path cache = U8(LinkDir("Sync") + tid);
     Tree save;
     std::string error;
     int found = 0;

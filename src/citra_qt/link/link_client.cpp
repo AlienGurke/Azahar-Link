@@ -36,6 +36,7 @@ typedef int sock_t;
 #include <future>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <thread>
 #include <map>
 #include <span>
@@ -173,20 +174,85 @@ std::string Format(std::string text, const std::string& a, const std::string& b)
 }
 
 namespace {
+namespace fs = std::filesystem;
+
+fs::path U8Path(const std::string& s) {
+    return fs::path(std::u8string(s.begin(), s.end()));
+}
+
+std::string g_link_dir;           // <user>/Azahar-Link/ (set once, see LinkDir)
+std::vector<std::string> g_moved; // what the move from 3ds-link did, for the log
+
+// Renames `from` to `to` inside `dir` if an entry with exactly the name `from` exists
+// (Windows does not tell "backups" and "Backups" apart, so not by fs::exists)
+void RenameEntry(const fs::path& dir, const std::string& from, const std::string& to) {
+    std::error_code ec;
+    bool found = false;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (e.path().filename().u8string() == std::u8string(from.begin(), from.end())) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return;
+    }
+    const fs::path a = dir / U8Path(from), b = dir / U8Path(to), tmp = dir / U8Path(to + ".tmp");
+    fs::rename(a, tmp, ec);
+    if (!ec) {
+        fs::rename(tmp, b, ec);
+    }
+    g_moved.push_back(fmt::format("{} -> {}: {}", from, to, ec ? ec.message() : "ok"));
+}
+
+// The link's folder, the same layout as melonDS-Link: Backups, Debug (log), Sync (what the
+// 3DS had at the last sync). It used to be <user>/3ds-link with backups, cache and the log
+// directly in it: moved over once, by renaming (nothing is copied, nothing deleted).
+void PrepareLinkDir() {
+    const std::string user = FileUtil::GetUserPath(FileUtil::UserPath::UserDir);
+    const fs::path old_dir = U8Path(user + "3ds-link"), dir = U8Path(user + "Azahar-Link");
+    std::error_code ec;
+    if (fs::is_directory(old_dir, ec) && !fs::exists(dir, ec)) {
+        fs::rename(old_dir, dir, ec);
+        g_moved.push_back(fmt::format("3ds-link -> Azahar-Link: {}", ec ? ec.message() : "ok"));
+        if (ec) {
+            g_link_dir = user + "3ds-link/"; // could not be moved (in use?): keep using it
+            return;
+        }
+    }
+    g_link_dir = user + "Azahar-Link/";
+    if (fs::is_directory(dir, ec)) {
+        RenameEntry(dir, "backups", "Backups");
+        RenameEntry(dir, "cache", "Sync");
+        const fs::path debug = dir / "Debug";
+        std::vector<std::string> loose;
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+            const std::string name = std::string(reinterpret_cast<const char*>(
+                e.path().filename().u8string().c_str()));
+            if (e.is_regular_file() &&
+                (name.rfind("link-log", 0) == 0 || name.rfind("colour-probe", 0) == 0)) {
+                loose.push_back(name);
+            }
+        }
+        for (const std::string& name : loose) {
+            fs::create_directories(debug, ec);
+            fs::rename(dir / U8Path(name), debug / U8Path(name), ec);
+            g_moved.push_back(fmt::format("{} -> Debug: {}", name, ec ? ec.message() : "ok"));
+        }
+    }
+}
+
 // Writes the log lines in its own thread: even appending to a file (opening, writing,
 // closing, maybe a virus scanner looking) took long enough in the picture's thread to put
 // a picture one refresh late on the 3DS every 10 s, when the statistics are written.
 void LogWriter(std::deque<std::string>& queue, std::mutex& m, std::condition_variable& cv) {
-    const std::string dir = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) + "3ds-link/";
+    const std::string dir = LinkDir("Debug");
     const std::string path = dir + "link-log.txt";
     FileUtil::CreateFullPath(dir);
-    {
-        std::string old;
-        if (FileUtil::Exists(path) && FileUtil::ReadFileToString(true, path, old) &&
-            old.size() > 512 * 1024) {
-            old.erase(0, old.size() - 256 * 1024); // keep the end
-            FileUtil::WriteStringToFile(true, path, old);
-        }
+    // over 2 MB: start again, the old one is kept once (as in melonDS-Link)
+    if (FileUtil::Exists(path) && FileUtil::GetSize(path) > 2 * 1024 * 1024) {
+        FileUtil::Delete(dir + "link-log.old.txt");
+        FileUtil::Rename(path, dir + "link-log.old.txt");
     }
     for (;;) {
         std::string text;
@@ -205,6 +271,17 @@ void LogWriter(std::deque<std::string>& queue, std::mutex& m, std::condition_var
     }
 }
 } // namespace
+
+std::string LinkDir(const std::string& sub) {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        PrepareLinkDir();
+        for (const std::string& m : g_moved) {
+            Log("folder: " + m);
+        }
+    });
+    return sub.empty() ? g_link_dir : g_link_dir + sub + "/";
+}
 
 void Log(const std::string& line) {
     static std::mutex m;
@@ -3161,8 +3238,7 @@ void Client::CalibrateColors() {
         // for looking at it later: "LCP1", the picture sent (320x240 RGB565, rows top to
         // bottom), the I420 made of it (240x320), the picture the 3DS shows (240x320
         // RGB565), the colour matrix used
-        const std::string path = FileUtil::GetUserPath(FileUtil::UserPath::UserDir) +
-                                 "3ds-link/colour-probe.bin";
+        const std::string path = LinkDir("Debug") + "colour-probe.bin";
         std::string blob = "LCP1";
         blob.append(reinterpret_cast<const char*>(h264_last.data()), h264_last.size() * 2);
         blob.append(reinterpret_cast<const char*>(h264_yuv.data()), W * H * 3 / 2);

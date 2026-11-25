@@ -6,7 +6,7 @@
 //
 // Step 1 of the save sync: only READS from the 3DS, nothing is ever written there.
 // Before Azahar's own save is replaced, both it and the copy from the 3DS are kept
-// in <user>/3ds-link/backups/<title id>/<time>/. The new files are written next to
+// in <user>/Azahar-Link/Backups/<title id>/<time>/. The new files are written next to
 // the old ones first and only then swapped in, so a failure leaves the old save.
 
 #pragma once
