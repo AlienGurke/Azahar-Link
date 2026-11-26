@@ -345,7 +345,7 @@ std::string Language() {
 // "Features and controls" (# heading, - point), built like the one of melonDS-Link
 #define HELP_EN \
     "# On the 3DS\n" \
-    "- SELECT + START: Azahar Link menu - game list, save backups, display, bottom picture on/off, " \
+    "- SELECT + START: 3DS Link menu - game list, save backups, display, bottom picture on/off, " \
     "top screen off, battery/WiFi at the top, language, end the game on the PC\n" \
     "- L + R + SELECT + START (hold): quit the app\n" \
     "- L + R + A: confirms everything that cannot be undone - B goes back\n" \
@@ -372,7 +372,7 @@ std::string Language() {
     "- Language, Debug (write log)\n"
 #define HELP_DE \
     "# Auf dem 3DS\n" \
-    "- SELECT + START: Azahar-Link-Menü – Spieleliste, Spielstand-Backups, Anzeige, Bild unten " \
+    "- SELECT + START: 3DS-Link-Menü – Spieleliste, Spielstand-Backups, Anzeige, Bild unten " \
     "an/aus, oberen Bildschirm aus, Akku/WLAN oben, Sprache, Spiel am PC beenden\n" \
     "- L + R + SELECT + START (halten): App beenden\n" \
     "- L + R + A: bestätigt alles, was sich nicht rückgängig machen lässt – B geht zurück\n" \

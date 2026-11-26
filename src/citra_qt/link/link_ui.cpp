@@ -522,6 +522,10 @@ void LinkUi::AfterShutdown(QWidget* parent) {
     loaded_program_id = 0;
     const bool live_session = live_ok;
     live_ok = false;
+    // (the log: after a game started from the 3DS while another ran, the last save of that
+    // one was not written back once - the next start then asked which save counts)
+    Log(fmt::format("game ended: program {:016X}, write back {}, live {}, connected {}", program_id,
+                    write_back, live_session, Get().GetState() == State::Connected));
     if (program_id == 0 || !write_back) {
         return;
     }
@@ -1249,7 +1253,9 @@ void LinkUi::HandleRemote() {
         }
         busy = true;
         if (system.IsPoweredOn() && stop_action) {
+            Log("3DS: another game - ending the running one first");
             stop_action->trigger(); // the 3DS asked before switching
+            Log(std::string("3DS: running one ended: ") + (system.IsPoweredOn() ? "no" : "yes"));
         }
         emit game_list->GameChosen(game);
         busy = false;
