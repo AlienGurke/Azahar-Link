@@ -311,6 +311,26 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
             }
         });
     }
+    {
+        // Debug: the log on/off (on by default), its folder - as in melonDS-Link
+        QMenu* debug = menu->addMenu(Q("debug"));
+        QAction* log = debug->addAction(Q("log_write"));
+        log->setCheckable(true);
+        const bool on = settings->value(QStringLiteral("log"), true).toBool();
+        log->setChecked(on);
+        SetLogging(on);
+        connect(log, &QAction::toggled, this, [this](bool value) {
+            settings->setValue(QStringLiteral("log"), value);
+            SetLogging(value);
+        });
+        debug->addSeparator();
+        QAction* folder = debug->addAction(Q("debug_folder"));
+        connect(folder, &QAction::triggered, this, [] {
+            const QString dir = QString::fromStdString(LinkDir("Debug"));
+            QDir().mkpath(dir);
+            QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+        });
+    }
     disconnect_action->setEnabled(false);
 
     connect(connect_action, &QAction::triggered, this, &LinkUi::OnConnect);

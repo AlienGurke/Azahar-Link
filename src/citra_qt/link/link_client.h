@@ -390,6 +390,9 @@ std::string LinkDir(const std::string& sub = {});
 
 /// A line in <user>/Azahar-Link/Debug/link-log.txt (what the link did, for finding problems).
 void Log(const std::string& line);
+// the log can be switched off (Debug menu); on by default
+void SetLogging(bool on);
+bool Logging();
 
 /// A text in the language of Azahar's interface (German or English).
 std::string Text(const char* key);

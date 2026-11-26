@@ -283,7 +283,27 @@ std::string LinkDir(const std::string& sub) {
     return sub.empty() ? g_link_dir : g_link_dir + sub + "/";
 }
 
+static std::atomic<bool> g_logging{true};
+bool Logging() {
+    return g_logging.load(std::memory_order_relaxed);
+}
+void SetLogging(bool on) {
+    if (on == g_logging.load()) {
+        return;
+    }
+    if (!on) {
+        Log("log: switched off");
+    }
+    g_logging = on;
+    if (on) {
+        Log("log: switched on");
+    }
+}
+
 void Log(const std::string& line) {
+    if (!Logging()) {
+        return;
+    }
     static std::mutex m;
     static std::condition_variable cv;
     static std::deque<std::string> queue;
@@ -308,6 +328,9 @@ std::string Text(const char* key) {
     };
     static const std::map<std::string, Entry> texts = {
         {"menu", {"3DS Link", "3DS Link"}},
+        {"debug", {"Debug", "Debug"}},
+        {"log_write", {"Write log", "Log schreiben"}},
+        {"debug_folder", {"Open debug folder (log)", "Debug-Ordner öffnen (Log)"}},
         {"ask_differ", {"The saves on the PC and on the 3DS differ",
                         "Die Spielstände am PC und auf dem 3DS sind verschieden"}},
         {"ask_newer", {"The save on the PC is newer", "Der Spielstand am PC ist neuer"}},
