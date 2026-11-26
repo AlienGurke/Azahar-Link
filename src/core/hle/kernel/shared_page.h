@@ -28,6 +28,11 @@ class Timing;
 
 namespace SharedPage {
 
+/// Azahar-Link: a time jump of the game clock in seconds (forward or back, like changing the
+/// raw RTC of a 3DS). It applies at once, also to a game that runs, and to every game started.
+void SetLinkTimeJump(s64 seconds);
+s64 GetLinkTimeJump();
+
 // See http://3dbrew.org/wiki/Configuration_Memory#Shared_Memory_Page_For_ARM11_Processes
 
 struct DateTime {

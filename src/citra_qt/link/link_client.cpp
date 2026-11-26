@@ -41,6 +41,7 @@ typedef int sock_t;
 #include <map>
 #include <span>
 
+#include <QDateTime>
 #include <QLocale>
 #include <fmt/format.h>
 
@@ -359,8 +360,10 @@ std::string Language() {
     "# In Azahar (menu 3DS Link)\n" \
     "- Take the Miis from the 3DS now; repair the save on the 3DS (\"save damaged\")\n" \
     "- Open folder: Backups, Debug (in Azahar's user folder, Azahar-Link)\n" \
-    "- Connection: connect automatically, pause when the 3DS disconnects or is closed, clock, Miis " \
+    "- Connection: connect automatically, pause when the 3DS disconnects or is closed, Miis " \
     "and system data from the 3DS, keyboard and controllers of the PC\n" \
+    "- Clock: time jump by days (at once, like RTChanger), remove the lock in two steps, the " \
+    "clock of the 3DS; connecting with a time jump asks to undo it first\n" \
     "- Picture on the 3DS: H.264 on a New 3DS (smoother) or tiles (exact), WiFi priority\n" \
     "- Picture on the PC: black while the 3DS is closed, 3DS battery and WiFi on the screen (kind " \
     "to OLED screens, if wanted only in fullscreen or a big window)\n" \
@@ -385,8 +388,10 @@ std::string Language() {
     "# In Azahar (Menü 3DS Link)\n" \
     "- Miis jetzt vom 3DS übernehmen; Spielstand auf dem 3DS reparieren („Spielstand beschädigt“)\n" \
     "- Ordner öffnen: Backups, Debug (in Azahars Benutzerordner, Azahar-Link)\n" \
-    "- Verbindung: automatisch verbinden, pausieren beim Trennen oder Zuklappen, Uhrzeit, Miis " \
+    "- Verbindung: automatisch verbinden, pausieren beim Trennen oder Zuklappen, Miis " \
     "und Systemdaten vom 3DS, Tastatur und Controller am PC\n" \
+    "- Uhrzeit: Zeitsprung tageweise (sofort, wie RTChanger), Sperre entfernen in zwei Schritten, " \
+    "Uhrzeit vom 3DS; verbinden mit Zeitsprung fragt erst nach dem Zurückstellen\n" \
     "- Bild auf dem 3DS: H.264 auf dem New 3DS (flüssiger) oder Kacheln (pixelgenau), " \
     "WLAN-Priorität\n" \
     "- Bild am PC: schwarz solange zugeklappt, 3DS-Akku und WLAN im Bild (OLED-schonend, auf " \
@@ -404,6 +409,44 @@ std::string Text(const char* key) {
         {"menu", {"3DS Link", "3DS Link"}},
         {"debug", {"Debug", "Debug"}},
         {"folders", {"Open folder", "Ordner öffnen"}},
+        {"group_clock", {"Clock", "Uhrzeit"}},
+        {"jump_day", {"%1 day", "%1 Tag"}},
+        {"jump_days", {"%1 days", "%1 Tage"}},
+        {"jump_none", {"Time jump: none (real time)", "Zeitsprung: keiner (echte Zeit)"}},
+        {"jump_info", {"Time jump: %1", "Zeitsprung: %1"}},
+        {"jump_fwd", {"1 day forward", "1 Tag vor"}},
+        {"jump_back", {"1 day back", "1 Tag zurück"}},
+        {"jump_set", {"Set days...", "Tage festlegen..."}},
+        {"jump_set_ask", {"Days ahead of the real time (negative: behind):",
+                          "Tage vor der echten Zeit (negativ: zurück):"}},
+        {"jump_reset", {"Back to the real time", "Zurück auf echte Zeit"}},
+        {"jump_real", {"Clock: real time again", "Uhrzeit: wieder echte Zeit"}},
+        {"jump_now", {"Time jump: %1 (applies at once)", "Zeitsprung: %1 (gilt sofort)"}},
+        {"penalty_1", {"Remove the lock - step 1: %1 days back...",
+                       "Sperre entfernen – Schritt 1: %1 Tage zurück..."}},
+        {"penalty_1_ask", {"The clock goes %1 days behind the real time.\n\nThen start the game "
+                           "(or log in) until it shows the lock, and choose step 2: back to the "
+                           "real time - the lock is gone.\n\nGo on?",
+                           "Die Uhr geht %1 Tage hinter die echte Zeit.\n\nDann das Spiel starten "
+                           "(bzw. einloggen), bis die Sperre erscheint, und Schritt 2 wählen: zurück "
+                           "auf echte Zeit – die Sperre ist weg.\n\nWeiter?"}},
+        {"penalty_2", {"Remove the lock - step 2: back to the real time",
+                       "Sperre entfernen – Schritt 2: zurück auf echte Zeit"}},
+        {"penalty_done", {"Lock removed: the clock shows the real time again",
+                          "Sperre entfernt: die Uhr zeigt wieder die echte Zeit"}},
+        {"penalty_days", {"Days for \"Remove the lock\": %1...", "Tage für „Sperre entfernen“: %1..."}},
+        {"penalty_days_ask", {"How many days behind the real time step 1 goes:",
+                              "Wie viele Tage Schritt 1 hinter die echte Zeit geht:"}},
+        {"jump_connect", {"A time jump is on (%1). The 3DS would get saves of another day.\n\n"
+                          "Back to the real time and connect?",
+                          "Ein Zeitsprung ist aktiv (%1). Der 3DS bekäme Spielstände von einem "
+                          "anderen Tag.\n\nZurück auf echte Zeit und verbinden?"}},
+        {"jump_reminder", {"The time jump is still on (%1).\n\nBefore you play on the 3DS: "
+                           "3DS Link > Clock > Remove the lock (or back to the real time).",
+                           "Der Zeitsprung ist noch aktiv (%1).\n\nBevor du am 3DS weiterspielst: "
+                           "3DS Link > Uhrzeit > Sperre entfernen (oder zurück auf echte Zeit)."}},
+        {"timejump_3ds", {"3DS: a time jump is on there - undo it in the 3DS app first (Clock)",
+                          "3DS: dort ist ein Zeitsprung aktiv – erst in der 3DS-App zurückstellen (Uhrzeit)"}},
         {"folder_backups", {"Backups", "Backups"}},
         {"folder_debug", {"Debug (log)", "Debug (Log)"}},
         {"group_connection", {"Connection", "Verbindung"}},
@@ -760,17 +803,44 @@ void SetNoteShown(Note n, bool shown) {
     }
 }
 
+// the options and the time jump (LinkOptionsExt): what the 3DS needs from us
+std::vector<uint8_t> Client::OptionsPayload() const {
+    std::vector<uint8_t> p(4 + sizeof(LinkOptionsExt));
+    const uint32_t opts = options.load();
+    std::memcpy(p.data(), &opts, 4);
+    LinkOptionsExt ext{};
+    ext.timeJump = time_jump.load();
+    // the PC's local time (time zone, summer time) as ms since 1900 "as if UTC"
+    const QDateTime now = QDateTime::currentDateTime();
+    ext.pcLocalMs = now.toMSecsSinceEpoch() + static_cast<int64_t>(now.offsetFromUtc()) * 1000 +
+                    2208988800000LL;
+    std::memcpy(p.data() + 4, &ext, sizeof(ext));
+    return p;
+}
+
+void Client::SendOptionsLater() {
+    if (state.load() == State::Connected) {
+        // from a worker: a request may wait for the connection
+        std::thread([this] {
+            const std::vector<uint8_t> p = OptionsPayload();
+            uint16_t st = 0;
+            TryRequest(LINK_CMD_OPTIONS, p.data(), static_cast<uint32_t>(p.size()), st);
+        }).detach();
+    }
+}
+
 void Client::SetOptions(uint32_t opts) {
     if (options.exchange(opts) == opts) {
         return;
     }
-    if (state.load() == State::Connected) {
-        // from a worker: a request may wait for the connection
-        std::thread([this, opts] {
-            uint16_t st = 0;
-            TryRequest(LINK_CMD_OPTIONS, &opts, sizeof(opts), st);
-        }).detach();
+    SendOptionsLater();
+}
+
+void Client::SetTimeJump(int64_t seconds) {
+    if (time_jump.exchange(seconds) == seconds) {
+        return;
     }
+    SendOptionsLater();
 }
 
 void Client::PushMessage(const std::string& msg, Note kind) {
@@ -1578,6 +1648,21 @@ void Client::Worker(std::string host) {
             state = State::Disconnected;
             return;
         }
+        if (hello_ok && status == LINK_ERR_TIMEJUMP) {
+            // a time jump is active on the 3DS: it has to be undone there first. Keep
+            // knocking (it reboots after that), the message once
+            if (!timejump_told) {
+                timejump_told = true;
+                Log("3DS: a time jump is active there - waiting until it is undone");
+                PushMessage(Text("timejump_3ds"));
+            }
+            CloseSockets();
+            for (int i = 0; i < 30 && !stop_requested; i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            continue;
+        }
+        timejump_told = false;
         if (!hello_ok || resp.size() < sizeof(LinkHelloResp)) {
             CloseSockets();
             continue;
@@ -1643,10 +1728,11 @@ void Client::Worker(std::string host) {
         ever_connected = true;
         connection_count++;
         {
-            // the settings the 3DS needs (closing it: sleep, or keep the game running)
-            const uint32_t opts = options.load();
+            // the settings the 3DS needs (closing it: sleep, or keep the game running; the
+            // time jump it shows; the PC's time for "clock from the PC")
+            const std::vector<uint8_t> p = OptionsPayload();
             uint16_t st = 0;
-            Request(LINK_CMD_OPTIONS, &opts, sizeof(opts), st);
+            Request(LINK_CMD_OPTIONS, p.data(), static_cast<uint32_t>(p.size()), st);
         }
         {
             const std::string text = Text("status_3ds");

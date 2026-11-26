@@ -67,6 +67,15 @@ private:
     void Console();      // pauses, battery hints, status and black on the picture
     void ShowNote(const QString& text); // on the picture while a game runs, else the status bar
     QWidget* RenderWidget();
+    // the clock (3DS Link > Clock)
+    void BuildClockMenu(QMenu* m);
+    void SetJump(int days);
+    bool JumpNeutralForConnect();
+    void ApplyClockOption(bool on);
+    static QString JumpText(int days);
+    int jump_days = 0;        // time jump of the game clock, days (0 = real time)
+    int penalty_step = 0;     // "remove the lock": 1 = step 1 done (clock behind)
+    int penalty_days = 3;
     bool WindowBig();    // fullscreen or a big window: the status may show
 
     // texts of the menu (for another language)

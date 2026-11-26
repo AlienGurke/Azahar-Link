@@ -2,6 +2,7 @@
 // Licensed under GPLv3 or any later version
 // Refer to the LICENSE.txt file included.
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <boost/serialization/base_object.hpp>
@@ -30,6 +31,14 @@ template void load_construct_data<iarchive>(iarchive& ar, SharedPage::Handler* t
 } // namespace boost::serialization
 
 namespace SharedPage {
+
+static std::atomic<s64> link_time_jump{0};
+void SetLinkTimeJump(s64 seconds) {
+    link_time_jump = seconds;
+}
+s64 GetLinkTimeJump() {
+    return link_time_jump.load();
+}
 
 static std::chrono::seconds GetInitTime(u64 override_init_time) {
     if (override_init_time != 0) {
@@ -91,7 +100,8 @@ Handler::Handler(Core::Timing& timing, u64 override_init_time) : timing(timing) 
 
 u64 Handler::GetSystemTimeSince2000() const {
     std::chrono::milliseconds now =
-        init_time + std::chrono::duration_cast<std::chrono::milliseconds>(timing.GetGlobalTimeUs());
+        init_time + std::chrono::duration_cast<std::chrono::milliseconds>(timing.GetGlobalTimeUs()) +
+        std::chrono::seconds(link_time_jump.load()); // Azahar-Link: time jump
 
     // 3DS system does't allow user to set a time before Jan 1 2000,
     // so we use it as an auxiliary epoch to calculate the console time.

@@ -51,6 +51,7 @@
 #include "common/file_util.h"
 #include "common/settings.h"
 #include "core/core.h"
+#include "core/hle/kernel/shared_page.h"
 #include "core/loader/loader.h"
 
 namespace Link {
@@ -222,6 +223,7 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     // the settings, by topic
     menu->addSeparator();
     QMenu* conn_menu = add_menu(menu, "group_connection");
+    QMenu* clock_menu = add_menu(menu, "group_clock");
     QMenu* video_menu = add_menu(menu, "group_video");
     QMenu* pc_menu = add_menu(menu, "group_pc");
     QMenu* save_menu = add_menu(menu, "group_saves");
@@ -246,18 +248,15 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         Get().SetOptions(on ? 0 : LINK_OPT_KEEP_AWAKE);
     });
     conn_menu->addSeparator();
-    add_check(conn_menu, "opt_clock", "clock", [this](bool on) {
-        option_clock = on;
-        // the user time offset of the 3DS, kept from the last connect, so games started
-        // without the 3DS see the same raw clock too; off: Azahar's own offset again
-        const QVariant stored = settings->value(QStringLiteral("user_time_offset"));
-        if (on && stored.isValid()) {
-            link_user_offset = static_cast<u64>(stored.toULongLong());
-        } else {
-            link_user_offset.reset();
-        }
-        Service::CFG::SetLinkUserTimeOffset(link_user_offset);
-    });
+    // the clock: time jump (like RTChanger on the 3DS), "remove the lock", 3DS clock
+    jump_days = settings->value(QStringLiteral("time_jump_days"), 0).toInt();
+    penalty_step = settings->value(QStringLiteral("penalty_step"), 0).toInt();
+    penalty_days = std::max(1, settings->value(QStringLiteral("penalty_days"), 3).toInt());
+    SharedPage::SetLinkTimeJump(static_cast<s64>(jump_days) * 86400);
+    Get().SetTimeJump(static_cast<int64_t>(jump_days) * 86400);
+    connect(clock_menu, &QMenu::aboutToShow, this, [this, clock_menu] { BuildClockMenu(clock_menu); });
+    clock_menu->addAction(QString()); // (filled when it opens)
+    ApplyClockOption(settings->value(QStringLiteral("clock"), true).toBool());
     add_check(conn_menu, "opt_miis", "miis", [](bool on) { Get().option_miis = on; });
     add_check(conn_menu, "opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
     add_check(conn_menu, "opt_pc_input", "pc_input",
@@ -477,7 +476,12 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
 
     const QString host = settings->value(QStringLiteral("host")).toString();
     if (auto_action->isChecked() && !host.isEmpty()) {
-        Get().Connect(host.toStdString());
+        // (a time jump: asked once the window is there)
+        QTimer::singleShot(0, this, [this, host] {
+            if (JumpNeutralForConnect()) {
+                Get().Connect(host.toStdString());
+            }
+        });
     }
 }
 
@@ -506,6 +510,12 @@ u64 LinkUi::loaded_extdata_id = 0;
 void LinkUi::AfterShutdown(QWidget* parent) {
     if (instance) {
         instance->FinishLiveWrite(); // a write while playing must be done first
+        // a time jump is still on: before playing on the 3DS, undo it / remove the lock
+        if (instance->jump_days != 0 && Get().GetState() == State::Connected) {
+            QMessageBox::information(parent, Q("group_clock"),
+                                     Q("jump_reminder").replace(QStringLiteral("%1"),
+                                                                JumpText(instance->jump_days)));
+        }
     }
     const u64 program_id = loaded_program_id;
     const u64 extdata_id = loaded_extdata_id;
@@ -721,7 +731,129 @@ void LinkUi::OnConnect() {
         return;
     }
     settings->setValue(QStringLiteral("host"), host);
+    if (!JumpNeutralForConnect()) {
+        return;
+    }
     Get().Connect(host.toStdString());
+}
+
+// the clock of the 3DS for Azahar's games (3DS Link > Clock)
+void LinkUi::ApplyClockOption(bool on) {
+    option_clock = on;
+    // the user time offset of the 3DS, kept from the last connect, so games started
+    // without the 3DS see the same raw clock too; off: Azahar's own offset again
+    const QVariant stored = settings->value(QStringLiteral("user_time_offset"));
+    if (on && stored.isValid()) {
+        link_user_offset = static_cast<u64>(stored.toULongLong());
+    } else {
+        link_user_offset.reset();
+    }
+    Service::CFG::SetLinkUserTimeOffset(link_user_offset);
+}
+
+// "1 day", "+2 days", "-3 days"
+QString LinkUi::JumpText(int days) {
+    const QString n = (days > 0 ? QStringLiteral("+") : QString()) + QString::number(days);
+    return Q(std::abs(days) == 1 ? "jump_day" : "jump_days").replace(QStringLiteral("%1"), n);
+}
+
+// the game clock jumps: at once, also in the game that runs; noted for the next start and
+// shown on the 3DS
+void LinkUi::SetJump(int days) {
+    if (days == jump_days) {
+        return;
+    }
+    jump_days = days;
+    settings->setValue(QStringLiteral("time_jump_days"), days);
+    SharedPage::SetLinkTimeJump(static_cast<s64>(days) * 86400);
+    Get().SetTimeJump(static_cast<int64_t>(days) * 86400);
+    Log("clock: time jump " + std::to_string(days) + " days");
+    ShowNote(days == 0 ? Q("jump_real") : Q("jump_now").replace(QStringLiteral("%1"), JumpText(days)));
+}
+
+// connecting with a time jump: undo it first (the 3DS would get saves of another day)
+bool LinkUi::JumpNeutralForConnect() {
+    if (jump_days == 0) {
+        return true;
+    }
+    if (QMessageBox::question(window, Q("group_clock"),
+                              Q("jump_connect").replace(QStringLiteral("%1"), JumpText(jump_days))) !=
+        QMessageBox::Yes) {
+        return false;
+    }
+    penalty_step = 0;
+    settings->setValue(QStringLiteral("penalty_step"), 0);
+    SetJump(0);
+    return true;
+}
+
+void LinkUi::BuildClockMenu(QMenu* m) {
+    m->clear();
+    QAction* info = m->addAction(jump_days == 0 ? Q("jump_none")
+                                                : Q("jump_info").replace(QStringLiteral("%1"),
+                                                                         JumpText(jump_days)));
+    info->setEnabled(false);
+    m->addSeparator();
+    connect(m->addAction(Q("jump_fwd")), &QAction::triggered, this, [this] { SetJump(jump_days + 1); });
+    connect(m->addAction(Q("jump_back")), &QAction::triggered, this, [this] { SetJump(jump_days - 1); });
+    connect(m->addAction(Q("jump_set")), &QAction::triggered, this, [this] {
+        bool ok = false;
+        const int d = QInputDialog::getInt(window, Q("group_clock"), Q("jump_set_ask"), jump_days,
+                                           -3650, 3650, 1, &ok);
+        if (ok) {
+            SetJump(d);
+        }
+    });
+    QAction* real = m->addAction(Q("jump_reset"));
+    real->setEnabled(jump_days != 0);
+    connect(real, &QAction::triggered, this, [this] {
+        penalty_step = 0;
+        settings->setValue(QStringLiteral("penalty_step"), 0);
+        SetJump(0);
+    });
+    m->addSeparator();
+    // "remove the lock" (the game's penalty after a jump back): N days behind the real time,
+    // start the game once (the lock appears), then back to the real time - the lock is gone
+    if (penalty_step == 0) {
+        QAction* a = m->addAction(Q("penalty_1").replace(QStringLiteral("%1"), QString::number(penalty_days)));
+        connect(a, &QAction::triggered, this, [this] {
+            if (QMessageBox::question(window, Q("group_clock"),
+                                      Q("penalty_1_ask").replace(QStringLiteral("%1"),
+                                                                 QString::number(penalty_days))) !=
+                QMessageBox::Yes) {
+                return;
+            }
+            penalty_step = 1;
+            settings->setValue(QStringLiteral("penalty_step"), 1);
+            SetJump(-penalty_days);
+        });
+    } else {
+        QAction* a = m->addAction(Q("penalty_2"));
+        connect(a, &QAction::triggered, this, [this] {
+            penalty_step = 0;
+            settings->setValue(QStringLiteral("penalty_step"), 0);
+            SetJump(0);
+            ShowNote(Q("penalty_done"));
+        });
+    }
+    QAction* days = m->addAction(Q("penalty_days").replace(QStringLiteral("%1"), QString::number(penalty_days)));
+    connect(days, &QAction::triggered, this, [this] {
+        bool ok = false;
+        const int d = QInputDialog::getInt(window, Q("group_clock"), Q("penalty_days_ask"),
+                                           penalty_days, 1, 30, 1, &ok);
+        if (ok) {
+            penalty_days = d;
+            settings->setValue(QStringLiteral("penalty_days"), d);
+        }
+    });
+    m->addSeparator();
+    QAction* clock = m->addAction(Q("opt_clock"));
+    clock->setCheckable(true);
+    clock->setChecked(option_clock);
+    connect(clock, &QAction::toggled, this, [this](bool on) {
+        settings->setValue(QStringLiteral("clock"), on);
+        ApplyClockOption(on);
+    });
 }
 
 void LinkUi::OnDisconnect() {
@@ -927,7 +1059,15 @@ void LinkUi::Console() {
         }
     }
     QStringList lines;
-    if (shown) {
+    const bool status_shown = shown != 0;
+    if (jump_days != 0 && running && (!status_big_only || WindowBig())) {
+        // a time jump is on: always a line (fixed), so it is not forgotten
+        lines.append(Q("jump_info").replace(QStringLiteral("%1"), JumpText(jump_days)));
+        if (!shown) {
+            shown = 1;
+        }
+    }
+    if (status_shown) {
         if (status_battery) {
             QString bat = cs.battery >= 0 ? QStringLiteral("%1 %").arg(cs.battery) : QStringLiteral("?");
             if (cs.charging) {
@@ -1194,8 +1334,11 @@ void LinkUi::Poll() {
 
     const State state = client.GetState();
     disconnect_action->setEnabled(state != State::Disconnected);
+    const QString jump = jump_days == 0 ? QString()
+                                        : Q("jump_info").replace(QStringLiteral("%1"), JumpText(jump_days));
     if (state == State::Disconnected) {
-        status_label->setVisible(false);
+        status_label->setText(jump);
+        status_label->setVisible(!jump.isEmpty());
         return;
     }
 
@@ -1212,6 +1355,9 @@ void LinkUi::Poll() {
                 text += QStringLiteral(" (") + Q("charging") + QStringLiteral(")");
             }
         }
+    }
+    if (!jump.isEmpty()) {
+        text += QStringLiteral(" · ") + jump;
     }
     status_label->setText(text);
     status_label->setVisible(true);

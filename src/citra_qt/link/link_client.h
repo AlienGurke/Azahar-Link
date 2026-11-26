@@ -113,6 +113,8 @@ public:
     }
     /// Settings the 3DS app needs (LINK_OPT_*): sent now and on every connect.
     void SetOptions(uint32_t opts);
+    /// The time jump of the game clock (seconds), shown on the 3DS.
+    void SetTimeJump(int64_t seconds);
     /// Counts the connections (things to do once per connection).
     uint32_t ConnectionCount() const {
         return connection_count.load();
@@ -212,6 +214,10 @@ private:
     void PushMessage(const std::string& msg, Note kind = Note::Always);
     std::atomic<bool> resume_wanted{false};
     std::atomic<uint32_t> options{0};          // LINK_OPT_* (sent on every connect)
+    std::atomic<int64_t> time_jump{0};         // seconds (LinkOptionsExt)
+    bool timejump_told = false;                // "time jump active on the 3DS" said once
+    std::vector<uint8_t> OptionsPayload() const;
+    void SendOptionsLater();
     std::atomic<uint32_t> connection_count{0};
     void CloseSockets();
     void UpdateCapture();
