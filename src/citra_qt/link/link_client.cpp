@@ -3009,8 +3009,8 @@ void Client::VideoStats(int64_t now) {
         Log(fmt::format("video: {} {:.1f} frames/s, {:.1f} KB per frame, {:.0f} KB/s, {:.1f} % lost{}",
                         h264_capable ? "H.264" : "tiles", stats_frames / secs,
                         stats_bytes / 1024.0 / stats_frames, stats_bytes / 1024.0 / secs, loss,
-                        h264_capable ? fmt::format(", {} key frames ({} asked for by the 3DS), target {} kbit/s",
-                                                   stats_keys, stats_key_asks, h264_bitrate / 1000)
+                        h264_capable ? fmt::format(", {} key frames ({} asked for by the 3DS), target {} kbit/s, sent at {:.2f} MB/s",
+                                                   stats_keys, stats_key_asks, h264_bitrate / 1000, h264_pace / 1e6)
                                      : fmt::format(", rate {:.0f} KB/s", budget_bytes / 1024)));
         if (!h264_capable) {
             std::vector<uint8_t> out;
@@ -3217,8 +3217,9 @@ bool Solve4(double a[4][5]) {
 // packet makes the next frame a key frame (the 3DS shows nothing broken meanwhile).
 void Client::SendH264(const std::vector<uint16_t>& frame) {
     // spread out a bit (the 3DS WiFi does not like bursts), but quick enough that a frame
-    // with its parity is there within ~15 ms
-    constexpr double kPaceBytesPerSec = 2.0e6;
+    // with its parity is there soon: 3 MB/s (a 25 KB frame of Mario Kart 7 with its parity
+    // took ~19 ms at 2 MB/s); back to 2 MB/s while many packets get lost (h264_pace)
+    const double kPaceBytesPerSec = h264_pace;
     if (frame.size() != static_cast<size_t>(kWidth * kHeight)) {
         return;
     }
@@ -3249,6 +3250,7 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
     if (queue_squeeze.exchange(false)) {
         h264_bitrate = std::max(2'000'000, static_cast<int>(h264_bitrate * 0.7));
         h264.SetBitrate(h264_bitrate);
+        h264_pace = 2.0e6;
     }
     // the data rate follows the WiFi
     if (stat_received + stat_lost >= 60) {
@@ -3265,6 +3267,12 @@ void Client::SendH264(const std::vector<uint16_t>& frame) {
         if (rate != h264_bitrate) {
             h264_bitrate = rate;
             h264.SetBitrate(rate);
+        }
+        // sending speed: slower while many get lost, back up slowly
+        if (loss > 0.08) {
+            h264_pace = 2.0e6;
+        } else if (loss < 0.03) {
+            h264_pace = std::min(3.0e6, h264_pace + 0.25e6);
         }
         stat_received = stat_lost = 0;
     }

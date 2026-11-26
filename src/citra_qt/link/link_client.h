@@ -302,6 +302,7 @@ private:
     int64_t h264_changed_ms = 0;    // when the picture last changed
     bool h264_settled = true;       // a key frame went out since it stands still
     int h264_bitrate = 8'000'000;
+    double h264_pace = 3.0e6;       // bytes a second a frame goes out at (see SendH264)
     bool h264_loss_since_key = true; // a packet got lost since the last key frame
     bool h264_second_key = false;    // send one more key frame right after the first
     std::vector<uint16_t> h264_last;
