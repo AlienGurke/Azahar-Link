@@ -33,9 +33,16 @@
 #include "citra_qt/game_list.h"
 #include "citra_qt/game_list_p.h"
 #include "citra_qt/uisettings.h"
+#include "citra_qt/bootmanager.h"
 #include "citra_qt/link/link_client.h"
+#include "citra_qt/link/link_osd.h"
 #include "citra_qt/link/link_save.h"
 #include "citra_qt/link/link_ui.h"
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QScreen>
+#include <QTextBrowser>
+#include <QVBoxLayout>
 #include <ctime>
 #include <QDateTime>
 #include <fmt/format.h>
@@ -125,19 +132,50 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     }
     settings = new QSettings(QString::fromStdString(path), QSettings::IniFormat, this);
 
-    // the menu goes right before "Help"
+    // the language of the link's texts (3DS Link > Language; until chosen: Azahar's)
+    SetLanguage(settings->value(QStringLiteral("language")).toString().toStdString());
+
+    // The menu goes right before "Help". Same groups as in melonDS-Link: connect, the
+    // actions, folders - then the settings by topic - then language, debug, help.
     QMenu* menu = new QMenu(Q("menu"), window);
+    menus.push_back({menu, "menu"});
     QMenu* help = window->menuBar()->findChild<QMenu*>(QStringLiteral("menu_Help"));
     if (help) {
         window->menuBar()->insertMenu(help->menuAction(), menu);
     } else {
         window->menuBar()->addMenu(menu);
     }
-    connect_action = menu->addAction(Q("connect"));
-    disconnect_action = menu->addAction(Q("disconnect"));
-    QAction* mii_action = menu->addAction(Q("miisync"));
+    const auto add_action = [this](QMenu* m, const char* key) {
+        QAction* a = m->addAction(Q(key));
+        texts.push_back({a, key});
+        return a;
+    };
+    const auto add_menu = [this](QMenu* m, const char* key) {
+        QMenu* sub = m->addMenu(Q(key));
+        menus.push_back({sub, key});
+        return sub;
+    };
+    // a setting that is on or off, stored under `name`
+    const auto add_check = [this, add_action](QMenu* m, const char* key, const char* name,
+                                              auto apply, bool def = true) {
+        QAction* a = add_action(m, key);
+        a->setCheckable(true);
+        const bool on = settings->value(QString::fromLatin1(name), def).toBool();
+        a->setChecked(on);
+        apply(on);
+        connect(a, &QAction::toggled, this, [this, name, apply](bool value) {
+            settings->setValue(QString::fromLatin1(name), value);
+            apply(value);
+        });
+        return a;
+    };
+
+    connect_action = add_action(menu, "connect");
+    disconnect_action = add_action(menu, "disconnect");
+    menu->addSeparator();
+    QAction* mii_action = add_action(menu, "miisync");
     connect(mii_action, &QAction::triggered, this, [] { Get().RequestMiiSync(); });
-    QAction* repair_action = menu->addAction(Q("repair"));
+    QAction* repair_action = add_action(menu, "repair");
     connect(repair_action, &QAction::triggered, this, [this] {
         const u64 tid = settings->value(QStringLiteral("last_title"), 0).toULongLong();
         if (tid == 0) {
@@ -166,16 +204,27 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
                                               QString::number(sent ? status : 999)));
         }
     });
-    QAction* backups_action = menu->addAction(Q("backups_open"));
-    connect(backups_action, &QAction::triggered, this, [] {
-        const QString dir = QString::fromStdString(BackupRoot());
-        QDir().mkpath(dir);
-        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
-    });
+    {
+        // the folders (as in melonDS-Link)
+        QMenu* folders = add_menu(menu, "folders");
+        const auto add_folder = [this, add_action, folders](const char* key, auto dir) {
+            QAction* a = add_action(folders, key);
+            connect(a, &QAction::triggered, this, [dir] {
+                const QString d = QString::fromStdString(dir());
+                QDir().mkpath(d);
+                QDesktopServices::openUrl(QUrl::fromLocalFile(d));
+            });
+        };
+        add_folder("folder_backups", [] { return BackupRoot(); });
+        add_folder("folder_debug", [] { return LinkDir("Debug"); });
+    }
+
+    // the settings, by topic
     menu->addSeparator();
-    auto_action = menu->addAction(Q("autoconnect"));
-    auto_action->setCheckable(true);
-    auto_action->setChecked(settings->value(QStringLiteral("autoconnect"), false).toBool());
+    QMenu* conn_menu = add_menu(menu, "group_connection");
+    QMenu* video_menu = add_menu(menu, "group_video");
+    QMenu* pc_menu = add_menu(menu, "group_pc");
+    QMenu* save_menu = add_menu(menu, "group_saves");
 
     // defaults like melonDS Link: the save comes from the 3DS when a game starts and goes
     // back whenever the game saves and when it stops, without questions. Earlier versions
@@ -188,20 +237,16 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         settings->setValue(QStringLiteral("defaults_version"), 2);
     }
 
-    // settings: what happens on connect and when a game starts (all on by default)
-    QMenu* options = menu->addMenu(Q("settings"));
-    const auto add_option = [&](const char* key, const char* name, auto apply, bool def = true) {
-        QAction* a = options->addAction(Q(key));
-        a->setCheckable(true);
-        const bool on = settings->value(QString::fromLatin1(name), def).toBool();
-        a->setChecked(on);
-        apply(on);
-        connect(a, &QAction::toggled, this, [this, name, apply](bool value) {
-            settings->setValue(QString::fromLatin1(name), value);
-            apply(value);
-        });
-    };
-    add_option("opt_clock", "clock", [this](bool on) {
+    // connection: on start, pauses, what comes from the 3DS on every connect
+    auto_action = add_check(conn_menu, "autoconnect", "autoconnect", [](bool) {}, false);
+    add_check(conn_menu, "opt_pause_loss", "pause_on_loss", [this](bool on) { pause_on_loss = on; });
+    add_check(conn_menu, "opt_pause_lid", "pause_on_lid", [this](bool on) {
+        pause_on_lid = on;
+        // not paused when closed: the 3DS stays awake and the game runs on
+        Get().SetOptions(on ? 0 : LINK_OPT_KEEP_AWAKE);
+    });
+    conn_menu->addSeparator();
+    add_check(conn_menu, "opt_clock", "clock", [this](bool on) {
         option_clock = on;
         // the user time offset of the 3DS, kept from the last connect, so games started
         // without the 3DS see the same raw clock too; off: Azahar's own offset again
@@ -213,20 +258,24 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         }
         Service::CFG::SetLinkUserTimeOffset(link_user_offset);
     });
-    add_option("opt_miis", "miis", [](bool on) { Get().option_miis = on; });
-    add_option("opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
-    add_option("opt_h264", "h264", [](bool on) { Get().option_h264 = on; });
-    add_option("opt_pc_input", "pc_input",
-               [](bool on) { Service::HID::LinkController::SetPcInputAllowed(on); });
-    add_option("opt_tile20", "tile20", [](bool on) { Get().option_tile20 = on; }, false);
+    add_check(conn_menu, "opt_miis", "miis", [](bool on) { Get().option_miis = on; });
+    add_check(conn_menu, "opt_sys", "systemdata", [](bool on) { Get().option_system_data = on; });
+    add_check(conn_menu, "opt_pc_input", "pc_input",
+              [](bool on) { Service::HID::LinkController::SetPcInputAllowed(on); });
+
+    // the picture on the 3DS
+    add_check(video_menu, "opt_h264", "h264", [](bool on) { Get().option_h264 = on; });
+    add_check(video_menu, "opt_tile20", "tile20", [](bool on) { Get().option_tile20 = on; },
+              false);
+    video_menu->addSeparator();
     {
         // WiFi priority of the bottom picture (the 3DS's buttons are always the top class)
-        QMenu* prio = options->addMenu(Q("wifi_prio"));
+        QMenu* prio = add_menu(video_menu, "wifi_prio");
         auto* group = new QActionGroup(prio);
         const int cur = std::clamp(settings->value(QStringLiteral("wifi_prio"), 0).toInt(), 0, 2);
         static const char* const keys[3] = {"wifi_prio_0", "wifi_prio_1", "wifi_prio_2"};
-        for (int i = 0; i < 3; i++) {
-            QAction* a = prio->addAction(Q(keys[i]));
+        for (const int i : {0, 2, 1}) { // from the highest to the lowest
+            QAction* a = add_action(prio, keys[i]);
             a->setCheckable(true);
             a->setChecked(i == cur);
             group->addAction(a);
@@ -237,100 +286,180 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         }
         Get().wifi_prio = cur;
     }
-    options->addSeparator();
+
+    // the picture on the PC: black while closed, the 3DS battery and WiFi
+    add_check(pc_menu, "opt_blackout", "black_when_closed", [this](bool on) { blackout = on; },
+              false);
+    pc_menu->addSeparator();
     {
-        // writing back is off until switched on on purpose
-        QAction* a = options->addAction(Q("opt_write"));
-        a->setCheckable(true);
-        write_back = settings->value(QStringLiteral("write_back"), true).toBool();
-        a->setChecked(write_back);
-        connect(a, &QAction::toggled, this, [this](bool on) {
-            write_back = on;
-            settings->setValue(QStringLiteral("write_back"), on);
+        status_mode = std::clamp(settings->value(QStringLiteral("status_mode"), 0).toInt(), 0, 8);
+        status_battery = settings->value(QStringLiteral("status_battery"), true).toBool();
+        status_wifi = settings->value(QStringLiteral("status_wifi"), true).toBool();
+        status_big_only = settings->value(QStringLiteral("status_big_only"), true).toBool();
+        QMenu* sm = add_menu(pc_menu, "status_menu");
+        connect(sm, &QMenu::aboutToShow, this, [this, sm] {
+            sm->clear();
+            auto* group = new QActionGroup(sm);
+            // menu order; 8 = wandering over a bigger area (the same numbers as melonDS-Link)
+            static const int order[] = {0, 1, 2, 8, 3, 4, 5, 6, 7};
+            static const int mins[] = {5, 10, 20, 30, 60};
+            for (const int m : order) {
+                const QString label =
+                    m == 0   ? Q("status_off")
+                    : m == 1 ? Q("status_always")
+                    : m == 2 ? Q("status_moving")
+                    : m == 8 ? Q("status_wander")
+                             : Q("status_every").replace(QStringLiteral("%1"),
+                                                         QString::number(mins[m - 3]));
+                QAction* a = sm->addAction(label);
+                a->setCheckable(true);
+                a->setChecked(m == status_mode);
+                group->addAction(a);
+                connect(a, &QAction::triggered, this, [this, m] {
+                    status_mode = m;
+                    settings->setValue(QStringLiteral("status_mode"), m);
+                });
+                if (m == 8) {
+                    sm->addSeparator();
+                }
+            }
+            sm->addSeparator();
+            const auto line = [this, sm](const char* key, bool& value, const char* name) {
+                QAction* a = sm->addAction(Q(key));
+                a->setCheckable(true);
+                a->setChecked(value);
+                connect(a, &QAction::toggled, this, [this, &value, name](bool on) {
+                    value = on;
+                    settings->setValue(QString::fromLatin1(name), on);
+                });
+            };
+            line("status_show_battery", status_battery, "status_battery");
+            line("status_show_wifi", status_wifi, "status_wifi");
+            sm->addSeparator();
+            line("status_big_only", status_big_only, "status_big_only");
         });
     }
-    add_option("opt_write_ask", "write_ask", [](bool on) { write_ask = on; });
+
+    // saves and backups
     {
-        // while playing: every save of the game goes to the 3DS too (needs writing back on)
-        QAction* a = options->addAction(Q("opt_write_live"));
-        a->setCheckable(true);
-        write_live = settings->value(QStringLiteral("write_live"), true).toBool();
-        a->setChecked(write_live);
-        connect(a, &QAction::toggled, this, [this](bool on) {
-            write_live = on;
-            settings->setValue(QStringLiteral("write_live"), on);
-        });
+        QMenu* start_menu = add_menu(save_menu, "opt_save");
+        QActionGroup* save_group = new QActionGroup(start_menu);
+        save_mode = settings->value(QStringLiteral("save_mode"), 1).toInt();
+        int mode = 0;
+        for (const char* key : {"opt_save_ask", "opt_save_always", "opt_save_never"}) {
+            QAction* a = add_action(start_menu, key);
+            a->setCheckable(true);
+            a->setChecked(mode == save_mode);
+            save_group->addAction(a);
+            connect(a, &QAction::triggered, this, [this, mode] {
+                save_mode = mode;
+                settings->setValue(QStringLiteral("save_mode"), mode);
+            });
+            mode++;
+        }
     }
-    QMenu* save_menu = options->addMenu(Q("opt_save"));
-    QActionGroup* save_group = new QActionGroup(save_menu);
-    save_mode = settings->value(QStringLiteral("save_mode"), 1).toInt();
-    int mode = 0;
-    for (const char* key : {"opt_save_ask", "opt_save_always", "opt_save_never"}) {
-        QAction* a = save_menu->addAction(Q(key));
-        a->setCheckable(true);
-        a->setChecked(mode == save_mode);
-        save_group->addAction(a);
-        connect(a, &QAction::triggered, this, [this, mode] {
-            save_mode = mode;
-            settings->setValue(QStringLiteral("save_mode"), mode);
-        });
-        mode++;
-    }
+    add_check(save_menu, "opt_write", "write_back", [](bool on) { write_back = on; });
+    add_check(save_menu, "opt_write_live", "write_live", [](bool on) { write_live = on; });
+    add_check(save_menu, "opt_write_ask", "write_ask", [](bool on) { write_ask = on; });
+    save_menu->addSeparator();
     {
-        // backups: how many of the newest are kept
+        // backups: how many of the newest, and for how many days played the first one
         backup_keep = std::max(1, settings->value(QStringLiteral("backup_keep"), 3).toInt());
-        QAction* a = options->addAction(Q("opt_backup_keep").replace(
-            QStringLiteral("%1"), QString::number(backup_keep)));
-        connect(a, &QAction::triggered, this, [this, a] {
+        backup_days = settings->value(QStringLiteral("backup_days"), 7).toInt();
+        QAction* keep = save_menu->addAction(QString());
+        QAction* days = save_menu->addAction(QString());
+        const auto label = [keep, days] {
+            keep->setText(Q("opt_backup_keep").replace(QStringLiteral("%1"),
+                                                       QString::number(backup_keep)));
+            days->setText(Q("opt_backup_days").replace(QStringLiteral("%1"),
+                                                       QString::number(backup_days)));
+        };
+        label();
+        relabel.push_back(label);
+        connect(keep, &QAction::triggered, this, [this, label] {
             bool ok = false;
-            const int n = QInputDialog::getInt(window, Q("opt_backup_keep_title"),
-                                               Q("opt_backup_keep_ask"), backup_keep, 1, 1000, 1,
-                                               &ok);
+            const int n = QInputDialog::getInt(window, Q("backups_title"),
+                                               Q("opt_backup_keep_ask"), backup_keep, 1, 1000,
+                                               1, &ok);
             if (ok) {
                 backup_keep = n;
                 settings->setValue(QStringLiteral("backup_keep"), n);
-                a->setText(Q("opt_backup_keep").replace(QStringLiteral("%1"), QString::number(n)));
+                label();
             }
         });
-    }
-    {
-        // daily backups: how many days keep their first backup
-        backup_days = settings->value(QStringLiteral("backup_days"), 7).toInt();
-        QAction* a = options->addAction(Q("opt_backup_days").replace(
-            QStringLiteral("%1"), QString::number(backup_days)));
-        connect(a, &QAction::triggered, this, [this, a] {
+        connect(days, &QAction::triggered, this, [this, label] {
             bool ok = false;
-            const int days = QInputDialog::getInt(window, Q("opt_backup_days_title"),
-                                                  Q("opt_backup_days_ask"), backup_days, 0,
-                                                  3650, 1, &ok);
+            const int n = QInputDialog::getInt(window, Q("backups_title"),
+                                               Q("opt_backup_days_ask"), backup_days, 0, 3650,
+                                               1, &ok);
             if (ok) {
-                backup_days = days;
-                settings->setValue(QStringLiteral("backup_days"), days);
-                a->setText(Q("opt_backup_days").replace(QStringLiteral("%1"),
-                                                        QString::number(days)));
+                backup_days = n;
+                settings->setValue(QStringLiteral("backup_days"), n);
+                label();
+            }
+        });
+    }
+
+    {
+        // which messages Azahar shows (all by default; errors always)
+        static const struct {
+            Note note;
+            const char* name;
+            const char* key;
+        } kNotes[] = {
+            {Note::Connection, "no_note_connection", "notes_connection"},
+            {Note::Save, "no_note_save", "notes_save"},
+            {Note::Pause, "no_note_pause", "notes_pause"},
+            {Note::Battery, "no_note_battery", "notes_battery"},
+        };
+        for (const auto& n : kNotes) {
+            SetNoteShown(n.note, !settings->value(QString::fromLatin1(n.name), false).toBool());
+        }
+        QMenu* notes = add_menu(menu, "notes_menu");
+        connect(notes, &QMenu::aboutToShow, this, [this, notes] {
+            notes->clear();
+            for (const auto& n : kNotes) {
+                QAction* a = notes->addAction(Q(n.key));
+                a->setCheckable(true);
+                a->setChecked(NoteShown(n.note));
+                const Note note = n.note;
+                const char* name = n.name;
+                connect(a, &QAction::toggled, this, [this, note, name](bool on) {
+                    SetNoteShown(note, on);
+                    settings->setValue(QString::fromLatin1(name), !on);
+                });
+            }
+        });
+    }
+
+    menu->addSeparator();
+    {
+        QMenu* lang = add_menu(menu, "language");
+        connect(lang, &QMenu::aboutToShow, this, [this, lang] {
+            lang->clear();
+            auto* group = new QActionGroup(lang);
+            for (const auto& [code, name] :
+                 {std::pair<const char*, const char*>{"en", "English"}, {"de", "Deutsch"}}) {
+                QAction* a = lang->addAction(QString::fromUtf8(name));
+                a->setCheckable(true);
+                a->setChecked(Language() == code);
+                group->addAction(a);
+                const std::string c = code;
+                connect(a, &QAction::triggered, this, [this, c] {
+                    SetLanguage(c);
+                    settings->setValue(QStringLiteral("language"), QString::fromStdString(c));
+                    Retranslate();
+                });
             }
         });
     }
     {
-        // Debug: the log on/off (on by default), its folder - as in melonDS-Link
-        QMenu* debug = menu->addMenu(Q("debug"));
-        QAction* log = debug->addAction(Q("log_write"));
-        log->setCheckable(true);
-        const bool on = settings->value(QStringLiteral("log"), true).toBool();
-        log->setChecked(on);
-        SetLogging(on);
-        connect(log, &QAction::toggled, this, [this](bool value) {
-            settings->setValue(QStringLiteral("log"), value);
-            SetLogging(value);
-        });
-        debug->addSeparator();
-        QAction* folder = debug->addAction(Q("debug_folder"));
-        connect(folder, &QAction::triggered, this, [] {
-            const QString dir = QString::fromStdString(LinkDir("Debug"));
-            QDir().mkpath(dir);
-            QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
-        });
+        // Debug: the log on/off (on by default) - as in melonDS-Link
+        QMenu* debug = add_menu(menu, "debug");
+        add_check(debug, "log_write", "log", [](bool on) { SetLogging(on); });
     }
+    QAction* help_action = add_action(menu, "help");
+    connect(help_action, &QAction::triggered, this, [this] { ShowHelp(); });
     disconnect_action->setEnabled(false);
 
     connect(connect_action, &QAction::triggered, this, &LinkUi::OnConnect);
@@ -430,8 +559,8 @@ void LinkUi::AfterShutdown(QWidget* parent) {
     switch (result.outcome) {
     case SaveExportResult::Outcome::Written:
     case SaveExportResult::Outcome::NothingToDo:
-        if (auto* main = qobject_cast<QMainWindow*>(parent)) {
-            main->statusBar()->showMessage(message, 10000);
+        if (instance && NoteShown(Note::Save)) {
+            instance->ShowNote(message);
         }
         break;
     case SaveExportResult::Outcome::NoBaseline:
@@ -567,8 +696,8 @@ bool LinkUi::BeforeBoot(QWidget* parent, const QString& filename) {
             instance->settings->setValue(QStringLiteral("last_title"),
                                          static_cast<qulonglong>(program_id));
         }
-        if (auto* main = qobject_cast<QMainWindow*>(parent)) {
-            main->statusBar()->showMessage(message, 10000);
+        if (instance && NoteShown(Note::Save)) {
+            instance->ShowNote(message);
         }
         return true;
     case SaveImportResult::Outcome::NoSave:
@@ -603,6 +732,221 @@ void LinkUi::OnAutoConnect(bool on) {
     settings->setValue(QStringLiteral("autoconnect"), on);
 }
 
+// the texts again, in the language just chosen
+void LinkUi::Retranslate() {
+    for (auto& [a, key] : texts) {
+        a->setText(Q(key));
+    }
+    for (auto& [m, key] : menus) {
+        m->setTitle(Q(key));
+    }
+    for (auto& f : relabel) {
+        f();
+    }
+}
+
+void LinkUi::ShowHelp() {
+    // "# heading" and "- point" lines into a simple page (as in melonDS-Link)
+    QString html;
+    bool in_list = false;
+    for (const QString& line : Q("help_text").split(QLatin1Char('\n'))) {
+        if (line.startsWith(QStringLiteral("# "))) {
+            if (in_list) {
+                html += QStringLiteral("</ul>");
+                in_list = false;
+            }
+            html += QStringLiteral("<h3>") + line.mid(2).toHtmlEscaped() + QStringLiteral("</h3>");
+        } else if (line.startsWith(QStringLiteral("- "))) {
+            if (!in_list) {
+                html += QStringLiteral("<ul>");
+                in_list = true;
+            }
+            html += QStringLiteral("<li>") + line.mid(2).toHtmlEscaped() + QStringLiteral("</li>");
+        }
+    }
+    if (in_list) {
+        html += QStringLiteral("</ul>");
+    }
+    QDialog dlg(window);
+    dlg.setWindowTitle(Q("help_title"));
+    dlg.resize(680, 620);
+    auto* lay = new QVBoxLayout(&dlg);
+    auto* view = new QTextBrowser(&dlg);
+    view->setHtml(html);
+    lay->addWidget(view);
+    auto* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(bb);
+    dlg.exec();
+}
+
+// Azahar's picture: the render window of the game (the main window holds it, or it is a
+// window of its own)
+QWidget* LinkUi::RenderWidget() {
+    return window->findChild<GRenderWindow*>();
+}
+
+bool LinkUi::WindowBig() {
+    QWidget* r = RenderWidget();
+    QWidget* top = r && r->isVisible() ? r->window() : window;
+    // fullscreen, maximised, or at least three quarters of the screen wide or high
+    if (top->isFullScreen() || top->isMaximized()) {
+        return true;
+    }
+    QScreen* scr = top->screen();
+    if (!scr) {
+        return true;
+    }
+    const QRect area = scr->availableGeometry();
+    const QRect mine = top->frameGeometry();
+    return mine.width() >= area.width() * 3 / 4 || mine.height() >= area.height() * 3 / 4;
+}
+
+// a message: on the picture while a game runs (the status bar is gone in fullscreen),
+// otherwise in the status bar
+void LinkUi::ShowNote(const QString& text) {
+    QWidget* r = RenderWidget();
+    if (osd && r == osd_render && r->isVisible() && Core::System::GetInstance().IsPoweredOn()) {
+        osd->AddMessage(text);
+        return;
+    }
+    queued.append(text);
+}
+
+// the console and the running game, as in melonDS-Link: pause when the 3DS goes away or is
+// closed (and continue when it is back), battery hints, battery/WiFi and black on the picture
+void LinkUi::Console() {
+    Client& client = Get();
+    Core::System& system = Core::System::GetInstance();
+    const State st = client.GetState();
+    const Client::ConsoleState cs = client.GetConsoleState();
+    const bool running = system.IsPoweredOn();
+    const bool paused = running && system.frame_limiter.IsFrameAdvancing();
+    const auto pause = [this] { QMetaObject::invokeMethod(window, "OnPauseGame"); };
+    const auto resume = [this] {
+        QMetaObject::invokeMethod(window, "OnResumeGame", Q_ARG(bool, false));
+    };
+
+    // the picture's boxes: made for the render window of the moment
+    QWidget* r = RenderWidget();
+    if (r != osd_render) {
+        osd.reset(r ? new Osd(r) : nullptr);
+        osd_render = r;
+    }
+
+    // the 3DS went away (app closed, WiFi gone) in the middle of a game: pause, so nothing
+    // happens without a controller. Not when disconnected on purpose; closed: see below
+    if (last_state == State::Connected && st == State::Connecting && pause_on_loss &&
+        running && !paused && !cs.lid_closed) {
+        pause();
+        paused_by_loss = true;
+        if (NoteShown(Note::Pause)) {
+            ShowNote(Q("pause_loss"));
+        }
+    }
+    if (st == State::Disconnected) {
+        paused_by_loss = paused_by_lid = false;
+    }
+    last_state = st;
+    // back in the game on the 3DS: continue
+    if (client.TakeResumeRequest() && paused_by_loss) {
+        paused_by_loss = false;
+        if (running && paused) {
+            resume();
+            if (NoteShown(Note::Pause)) {
+                ShowNote(Q("pause_resumed"));
+            }
+        }
+    }
+    // closed: pause (setting) - the 3DS says so before it goes to sleep
+    if (pause_on_lid && cs.lid_closed && st != State::Disconnected && running && !paused &&
+        !paused_by_lid) {
+        pause();
+        paused_by_lid = true;
+        if (NoteShown(Note::Pause)) {
+            ShowNote(Q("pause_lid"));
+        }
+    }
+    if (paused_by_lid && !cs.lid_closed && st == State::Connected) {
+        paused_by_lid = false;
+        paused_by_loss = false;
+        if (running && paused) {
+            resume();
+            if (NoteShown(Note::Pause)) {
+                ShowNote(Q("pause_resumed"));
+            }
+        }
+    }
+
+    // battery hints at 30/20/10 % (on the PC and on the 3DS)
+    if (cs.battery >= 0 && st == State::Connected) {
+        if (cs.charging || cs.battery > battery_warned + 5) {
+            battery_warned = 101;
+        }
+        for (const int th : {30, 20, 10}) {
+            if (!cs.charging && cs.battery <= th && battery_warned > th) {
+                const int level = cs.battery <= 10 ? 10 : cs.battery <= 20 ? 20 : 30;
+                battery_warned = level;
+                if (NoteShown(Note::Battery)) {
+                    const char* key = level <= 10 ? "battery_10" : level <= 20 ? "battery_20" : "battery_30";
+                    ShowNote(Q(key).replace(QStringLiteral("%1"), QString::number(cs.battery)));
+                    const std::string t3 = Format(Text(level <= 10 ? "battery_10_3ds" : "battery_low_3ds"),
+                                                  std::to_string(cs.battery), "");
+                    std::thread([t3] { Get().SetStatusText(t3); }).detach();
+                }
+                break;
+            }
+        }
+    }
+
+    if (!osd) {
+        return;
+    }
+    // battery/WiFi in the top right corner: always (fixed or moving, kind to OLEDs) or for a
+    // few seconds every 5..60 minutes; only in fullscreen or a big window (setting)
+    int shown = 0;
+    if (cs.known && st == State::Connected && running) {
+        if (status_mode == 1 || status_mode == 2) {
+            shown = status_mode;
+        } else if (status_mode == 8) {
+            shown = 3;
+        } else if (status_mode >= 3) {
+            static const int mins[] = {5, 10, 20, 30, 60};
+            const qint64 now_s = QDateTime::currentSecsSinceEpoch();
+            if (client.ConnectionCount() != status_conn ||
+                now_s - status_shown_at >= mins[status_mode - 3] * 60) {
+                status_conn = client.ConnectionCount();
+                status_shown_at = now_s;
+            }
+            if (now_s - status_shown_at < 6) {
+                shown = 2;
+            }
+        }
+        if (shown && status_big_only && !WindowBig()) {
+            shown = 0;
+        }
+    }
+    QStringList lines;
+    if (shown) {
+        if (status_battery) {
+            QString bat = cs.battery >= 0 ? QStringLiteral("%1 %").arg(cs.battery) : QStringLiteral("?");
+            if (cs.charging) {
+                bat += QStringLiteral(" ") + Q("status_charging");
+            }
+            lines.append(Q("osd_battery").replace(QStringLiteral("%1"), bat));
+        }
+        if (status_wifi) {
+            static const char* const keys[] = {"wifi0", "wifi1", "wifi2", "wifi3"};
+            const QString w = cs.wifi >= 0 ? Q(keys[cs.wifi]) : QStringLiteral("?");
+            lines.append(Q("osd_wifi").replace(QStringLiteral("%1"), w));
+        }
+    }
+    osd->SetStatus(lines, shown);
+    // closed and paused: everything black if wanted (nothing lit on an OLED)
+    osd->SetBlackout(blackout && paused_by_lid && running);
+    osd->Update();
+}
+
 void LinkUi::ShowQueued() {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (queued.isEmpty() || now < shown_until) {
@@ -621,7 +965,9 @@ void LinkUi::LiveWrite() {
         const SaveExportResult r = live_result;
         if (r.outcome == SaveExportResult::Outcome::Written) {
             live_wrote = true;
-            window->statusBar()->showMessage(Q("live_done"), 5000);
+            if (NoteShown(Note::Save)) {
+                ShowNote(Q("live_done"));
+            }
         } else if (r.outcome != SaveExportResult::Outcome::NothingToDo) {
             live_ok = false; // nothing more while playing; the end of the game asks again
             queued.append(Q("live_stopped").replace(QStringLiteral("%1"),
@@ -841,9 +1187,10 @@ void LinkUi::Poll() {
 
     std::string msg;
     while (client.PopMessage(msg)) {
-        queued.append(QString::fromStdString(msg));
+        ShowNote(QString::fromStdString(msg));
     }
     ShowQueued();
+    Console();
 
     const State state = client.GetState();
     disconnect_action->setEnabled(state != State::Disconnected);

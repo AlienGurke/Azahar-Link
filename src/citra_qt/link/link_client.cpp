@@ -321,6 +321,80 @@ void Log(const std::string& line) {
     cv.notify_one();
 }
 
+static std::mutex g_lang_mutex;
+static std::string g_lang; // "" = Azahar's
+void SetLanguage(const std::string& code) {
+    std::scoped_lock lock{g_lang_mutex};
+    g_lang = code;
+}
+std::string Language() {
+    {
+        std::scoped_lock lock{g_lang_mutex};
+        if (!g_lang.empty()) {
+            return g_lang;
+        }
+    }
+    QString lang = UISettings::values.language;
+    if (lang.isEmpty()) {
+        lang = QLocale::system().name();
+    }
+    return lang.startsWith(QStringLiteral("de")) ? "de" : "en";
+}
+
+// "Features and controls" (# heading, - point), built like the one of melonDS-Link
+#define HELP_EN \
+    "# On the 3DS\n" \
+    "- SELECT + START: Azahar Link menu - game list, save backups, display, bottom picture on/off, " \
+    "top screen off, battery/WiFi at the top, language, end the game on the PC\n" \
+    "- L + R + SELECT + START (hold): quit the app\n" \
+    "- L + R + A: confirms everything that cannot be undone - B goes back\n" \
+    "- Tab \"3DS\": the games of Azahar's game list; A starts one on the PC\n" \
+    "- melonDS and Azahar can both be connected; the game you play decides which one gets the buttons\n" \
+    "- Closing the 3DS pauses the game (setting); after opening it continues by itself\n" \
+    "# Saves\n" \
+    "- When a game starts, its save comes from the 3DS (setting); every save in the game goes back " \
+    "to the 3DS, and once more when the game stops\n" \
+    "- The save on the 3DS before is kept on the PC as a backup\n" \
+    "- Put a backup back: 3DS menu \"Save backups\"\n" \
+    "# In Azahar (menu 3DS Link)\n" \
+    "- Take the Miis from the 3DS now; repair the save on the 3DS (\"save damaged\")\n" \
+    "- Open folder: Backups, Debug (in Azahar's user folder, Azahar-Link)\n" \
+    "- Connection: connect automatically, pause when the 3DS disconnects or is closed, clock, Miis " \
+    "and system data from the 3DS, keyboard and controllers of the PC\n" \
+    "- Picture on the 3DS: H.264 on a New 3DS (smoother) or tiles (exact), WiFi priority\n" \
+    "- Picture on the PC: black while the 3DS is closed, 3DS battery and WiFi on the screen (kind " \
+    "to OLED screens, if wanted only in fullscreen or a big window)\n" \
+    "- Saves and backups: when the save comes from / goes to the 3DS, how many backups are kept\n" \
+    "- Messages in Azahar: each kind can be switched off; battery hints at 30/20/10 %\n" \
+    "- Language, Debug (write log)\n"
+#define HELP_DE \
+    "# Auf dem 3DS\n" \
+    "- SELECT + START: Azahar-Link-Menü – Spieleliste, Spielstand-Backups, Anzeige, Bild unten " \
+    "an/aus, oberen Bildschirm aus, Akku/WLAN oben, Sprache, Spiel am PC beenden\n" \
+    "- L + R + SELECT + START (halten): App beenden\n" \
+    "- L + R + A: bestätigt alles, was sich nicht rückgängig machen lässt – B geht zurück\n" \
+    "- Tab „3DS“: die Spiele aus Azahars Spieleliste; A startet eines am PC\n" \
+    "- melonDS und Azahar können gleichzeitig verbunden sein; das Spiel, das du spielst, " \
+    "bestimmt, wer die Tasten bekommt\n" \
+    "- Zuklappen pausiert das Spiel (Einstellung); nach dem Aufklappen geht es von selbst weiter\n" \
+    "# Spielstände\n" \
+    "- Beim Spielstart kommt der Spielstand vom 3DS (Einstellung); jedes Speichern im Spiel geht " \
+    "an den 3DS zurück, und noch einmal beim Beenden\n" \
+    "- Der vorherige Spielstand des 3DS bleibt am PC als Backup\n" \
+    "- Backup zurückspielen: 3DS-Menü „Spielstand-Backups“\n" \
+    "# In Azahar (Menü 3DS Link)\n" \
+    "- Miis jetzt vom 3DS übernehmen; Spielstand auf dem 3DS reparieren („Spielstand beschädigt“)\n" \
+    "- Ordner öffnen: Backups, Debug (in Azahars Benutzerordner, Azahar-Link)\n" \
+    "- Verbindung: automatisch verbinden, pausieren beim Trennen oder Zuklappen, Uhrzeit, Miis " \
+    "und Systemdaten vom 3DS, Tastatur und Controller am PC\n" \
+    "- Bild auf dem 3DS: H.264 auf dem New 3DS (flüssiger) oder Kacheln (pixelgenau), " \
+    "WLAN-Priorität\n" \
+    "- Bild am PC: schwarz solange zugeklappt, 3DS-Akku und WLAN im Bild (OLED-schonend, auf " \
+    "Wunsch nur im Vollbild oder großen Fenster)\n" \
+    "- Spielstände und Backups: wann der Spielstand vom / zum 3DS geht, wie viele Backups bleiben\n" \
+    "- Hinweise in Azahar: jede Art einzeln abschaltbar; Akku-Hinweise bei 30/20/10 %\n" \
+    "- Sprache, Debug (Log schreiben)\n"
+
 std::string Text(const char* key) {
     struct Entry {
         const char* en;
@@ -329,8 +403,66 @@ std::string Text(const char* key) {
     static const std::map<std::string, Entry> texts = {
         {"menu", {"3DS Link", "3DS Link"}},
         {"debug", {"Debug", "Debug"}},
+        {"folders", {"Open folder", "Ordner öffnen"}},
+        {"folder_backups", {"Backups", "Backups"}},
+        {"folder_debug", {"Debug (log)", "Debug (Log)"}},
+        {"group_connection", {"Connection", "Verbindung"}},
+        {"group_video", {"Picture on the 3DS", "Bild auf dem 3DS"}},
+        {"group_pc", {"Picture on the PC", "Bild am PC"}},
+        {"group_saves", {"Saves and backups", "Spielstände und Backups"}},
+        {"backups_title", {"Save backups", "Spielstand-Backups"}},
+        {"opt_pause_loss", {"Pause the game when the 3DS disconnects",
+                            "Spiel pausieren, wenn der 3DS getrennt wird"}},
+        {"opt_pause_lid", {"Pause the game when the 3DS is closed",
+                           "Spiel pausieren, wenn der 3DS zugeklappt wird"}},
+        {"opt_blackout", {"Screen black while the 3DS is closed (game paused)",
+                          "Bild schwarz, solange der 3DS zugeklappt ist (Spiel pausiert)"}},
+        {"status_menu", {"Show 3DS battery and WiFi", "3DS-Akku und WLAN anzeigen"}},
+        {"status_off", {"Off", "Aus"}},
+        {"status_always", {"Always", "Immer"}},
+        {"status_moving", {"Always, moving slightly (kind to OLED screens)",
+                           "Immer, leicht wandernd (schont OLED-Bildschirme)"}},
+        {"status_wander", {"Always, moving slowly over a bigger area (OLED, safest)",
+                           "Immer, wandert langsam über einen größeren Bereich (OLED, am sichersten)"}},
+        {"status_every", {"Briefly every %1 minutes", "Alle %1 Minuten kurz"}},
+        {"status_show_battery", {"Battery", "Akku"}},
+        {"status_show_wifi", {"WiFi", "WLAN"}},
+        {"status_big_only", {"Only in fullscreen or a big window", "Nur im Vollbild oder großen Fenster"}},
+        {"status_charging", {"(charging)", "(lädt)"}},
+        {"osd_battery", {"3DS battery: %1", "3DS-Akku: %1"}},
+        {"osd_wifi", {"3DS WiFi: %1", "3DS-WLAN: %1"}},
+        {"wifi0", {"very weak", "sehr schwach"}},
+        {"wifi1", {"weak", "schwach"}},
+        {"wifi2", {"good", "gut"}},
+        {"wifi3", {"very good", "sehr gut"}},
+        {"notes_menu", {"Messages in Azahar", "Hinweise in Azahar"}},
+        {"notes_connection", {"Connected / disconnected", "Verbunden / getrennt"}},
+        {"notes_save", {"Save written to / loaded from the 3DS",
+                        "Spielstand auf den 3DS geschrieben / vom 3DS geladen"}},
+        {"notes_pause", {"Game paused / continues", "Spiel pausiert / geht weiter"}},
+        {"notes_battery", {"Battery low", "Akku schwach"}},
+        {"pause_loss", {"3DS Link: game paused - the 3DS is gone (continues when you are back in "
+                        "the game on the 3DS)",
+                        "3DS Link: Spiel pausiert – der 3DS ist weg (geht weiter, sobald du am 3DS "
+                        "wieder im Spiel bist)"}},
+        {"pause_lid", {"3DS Link: game paused - the 3DS was closed",
+                       "3DS Link: Spiel pausiert – der 3DS wurde zugeklappt"}},
+        {"pause_resumed", {"3DS Link: game continues", "3DS Link: Spiel geht weiter"}},
+        {"battery_30", {"3DS battery at %1 % - you may want to plug in the charger.",
+                        "3DS-Akku bei %1 % – am besten schon mal das Ladekabel anschließen."}},
+        {"battery_20", {"3DS battery at %1 % - please plug in the charger.",
+                        "3DS-Akku bei %1 % – bitte das Ladekabel anschließen."}},
+        {"battery_10", {"3DS battery at %1 % - it will turn off soon. Better save now.",
+                        "3DS-Akku bei %1 % – der 3DS geht bald aus. Speichere am besten jetzt."}},
+        {"battery_low_3ds", {"Battery %1 % - please plug in the charger",
+                             "Akku %1 % – bitte Ladekabel anschließen"}},
+        {"battery_10_3ds", {"Battery %1 % - turning off soon, save now!",
+                            "Akku %1 % – geht bald aus, jetzt speichern!"}},
+        {"language", {"Language", "Sprache"}},
+        {"help", {"Features and controls...", "Funktionen und Bedienung..."}},
+        {"help_title", {"Azahar Link - features and controls", "Azahar Link - Funktionen und Bedienung"}},
+        {"help_text", {HELP_EN, HELP_DE}},
         {"log_write", {"Write log", "Log schreiben"}},
-        {"debug_folder", {"Open debug folder (log)", "Debug-Ordner öffnen (Log)"}},
         {"ask_differ", {"The saves on the PC and on the 3DS differ",
                         "Die Spielstände am PC und auf dem 3DS sind verschieden"}},
         {"ask_newer", {"The save on the PC is newer", "Der Spielstand am PC ist neuer"}},
@@ -445,29 +577,22 @@ std::string Text(const char* key) {
         {"opt_write_live", {"Also send it to the 3DS whenever the game saves",
                             "Auch bei jedem Speichern im Spiel an den 3DS senden"}},
         {"opt_backup_keep", {"Backups: keep the newest %1...", "Backups: die neuesten %1 behalten..."}},
-        {"opt_backup_keep_title", {"Backups", "Backups"}},
         {"opt_backup_keep_ask", {"How many of the newest backups of a game are kept:",
                                  "Wie viele der neuesten Backups eines Spiels aufgehoben werden:"}},
         {"opt_backup_days", {"Daily backups: keep %1 days played...",
                              "Tägliche Backups: %1 Spieltage behalten..."}},
-        {"opt_backup_days_title", {"Daily backups", "Tägliche Backups"}},
         {"opt_backup_days_ask", {"Besides the newest backups, the first backup of each day the "
                                  "game was played is kept, for this many such days (0 = none):",
                                  "Zusätzlich zu den neuesten Backups wird das erste Backup jedes "
                                  "Tages, an dem gespielt wurde, aufgehoben - für so viele Spieltage "
                                  "(0 = keine):"}},
-        {"wifi_prio", {"WiFi priority", "WLAN-Priorität"}},
-        {"wifi_prio_0", {"Buttons high, picture medium (recommended)",
-                         "Eingaben hoch, Bild mittel (empfohlen)"}},
-        {"wifi_prio_1", {"Buttons high, picture low (fastest buttons; the picture may stall when "
-                         "the WiFi is busy)",
-                         "Eingaben hoch, Bild niedrig (schnellste Eingaben; das Bild kann bei "
-                         "vollem WLAN hängen)"}},
-        {"wifi_prio_2", {"Buttons high, picture normal", "Eingaben hoch, Bild normal"}},
-        {"opt_tile20", {"Tiles: allow 20 fps for 30 fps games (smoother than 15, but a little "
-                        "uneven)",
-                        "Kacheln: 20 fps auch bei 30-fps-Spielen (flüssiger als 15, aber leicht "
-                        "ungleichmäßig)"}},
+        {"wifi_prio", {"WiFi priority of the picture (from the next connect)",
+                       "WLAN-Priorität des Bildes (ab der nächsten Verbindung)"}},
+        {"wifi_prio_0", {"Picture preferred (default)", "Bild bevorzugt (Standard)"}},
+        {"wifi_prio_1", {"Picture low", "Bild niedrig"}},
+        {"wifi_prio_2", {"Picture normal", "Bild normal"}},
+        {"opt_tile20", {"Tiles: 20 pictures a second for 30 fps games too (less even)",
+                        "Kacheln: 20 Bilder pro Sekunde auch bei 30-fps-Spielen (ungleichmäßiger)"}},
         {"opt_pc_input", {"Keyboard and controllers of the PC also work while the 3DS is connected",
                           "Tastatur und Controller am PC auch bei verbundenem 3DS"}},
         {"opt_h264", {"Bottom screen as H.264 on a New 3DS (smoother)",
@@ -516,7 +641,6 @@ std::string Text(const char* key) {
         {"repair_done", {"Done - start the game on the 3DS", "Erledigt - jetzt das Spiel auf dem 3DS starten"}},
         {"repair_failed", {"Did not work (%1). Is the 3DS connected and the app up to date?",
                            "Hat nicht geklappt (%1). Ist der 3DS verbunden und die App aktuell?"}},
-        {"backups_open", {"Open the save backups folder", "Ordner mit den Spielstand-Sicherungen öffnen"}},
         {"miisync", {"Take the Miis from the 3DS now", "Miis jetzt vom 3DS übernehmen"}},
         {"mii_done", {"Miis taken from the 3DS (Mii Maker)", "Miis vom 3DS übernommen (Mii-Maker)"}},
         {"mii_same", {"The Miis are already the same as on the 3DS",
@@ -526,11 +650,7 @@ std::string Text(const char* key) {
         {"mii_old_app", {"For the Miis, please update the 3DS Link app on the 3DS",
                          "Für die Miis bitte die 3DS-Link-App auf dem 3DS aktualisieren"}},
     };
-    QString lang = UISettings::values.language;
-    if (lang.isEmpty()) {
-        lang = QLocale::system().name();
-    }
-    const bool german = lang.startsWith(QStringLiteral("de"));
+    const bool german = Language() == "de";
     const auto it = texts.find(key);
     if (it == texts.end()) {
         return key;
@@ -628,7 +748,35 @@ std::string Client::MarkQos(intptr_t sock, const void* to_sockaddr_in, bool voic
 #endif
 }
 
-void Client::PushMessage(const std::string& msg) {
+static std::atomic<uint32_t> g_muted_notes{0};
+bool NoteShown(Note n) {
+    return n == Note::Always || !(g_muted_notes.load() & (1u << static_cast<int>(n)));
+}
+void SetNoteShown(Note n, bool shown) {
+    if (shown) {
+        g_muted_notes &= ~(1u << static_cast<int>(n));
+    } else {
+        g_muted_notes |= 1u << static_cast<int>(n);
+    }
+}
+
+void Client::SetOptions(uint32_t opts) {
+    if (options.exchange(opts) == opts) {
+        return;
+    }
+    if (state.load() == State::Connected) {
+        // from a worker: a request may wait for the connection
+        std::thread([this, opts] {
+            uint16_t st = 0;
+            TryRequest(LINK_CMD_OPTIONS, &opts, sizeof(opts), st);
+        }).detach();
+    }
+}
+
+void Client::PushMessage(const std::string& msg, Note kind) {
+    if (!NoteShown(kind)) {
+        return;
+    }
     std::scoped_lock lock{msg_mutex};
     messages.push_back(msg);
     while (messages.size() > 8) {
@@ -890,6 +1038,8 @@ int Client::PollEvents() {
     } else if (ev.type == LINK_EVENT_STOPGAME) {
         stop_game_wanted = true;
         Log("3DS: end the game");
+    } else if (ev.type == LINK_EVENT_RESUME) {
+        resume_wanted = true; // back in the game on the 3DS
     } else if (ev.type == LINK_EVENT_LIBRARY) {
         library_wanted = true;
     } else if (ev.type == LINK_EVENT_ANSWER) {
@@ -1489,8 +1639,15 @@ void Client::Worker(std::string host) {
         UpdateCapture();
         Log("connected to " + host);
         const std::string name(hello.name, strnlen(hello.name, sizeof(hello.name)));
-        PushMessage(Format(Text("connected"), name, host));
+        PushMessage(Format(Text("connected"), name, host), Note::Connection);
         ever_connected = true;
+        connection_count++;
+        {
+            // the settings the 3DS needs (closing it: sleep, or keep the game running)
+            const uint32_t opts = options.load();
+            uint16_t st = 0;
+            Request(LINK_CMD_OPTIONS, &opts, sizeof(opts), st);
+        }
         {
             const std::string text = Text("status_3ds");
             uint16_t st = 0;
@@ -1700,8 +1857,9 @@ void Client::Worker(std::string host) {
                 }
             }
             // closed: it goes to sleep. Drop the connection now and keep knocking,
-            // so it is back as soon as the 3DS is opened again
-            if (lid_closed) {
+            // so it is back as soon as the 3DS is opened again. (Not if it stays awake:
+            // "pause when closed" off, the game runs on)
+            if (lid_closed && !(options.load() & LINK_OPT_KEEP_AWAKE)) {
                 lost_by_lid = true;
                 break;
             }
@@ -1726,7 +1884,7 @@ void Client::Worker(std::string host) {
         state = State::Connecting;
         UpdateCapture();
         if (!stop_requested && ever_connected && !lost_by_lid) {
-            PushMessage(Text("lost"));
+            PushMessage(Text("lost"), Note::Connection);
         }
         if (lost_by_lid) {
             // it is falling asleep right now: knocking in the next moment would
@@ -1857,7 +2015,9 @@ void Client::VideoWorker() {
             // still previews (or lost tiles) on the 3DS: sharpen them at once, not only with
             // every 8th unchanged frame (the test: coarse tiles stayed on still pictures)
             SendTiles(frame);
-        } else if (same && !tile_held && ++tile_same_count % 4 == 0) {
+        } else if (same && !tile_held && ++tile_same_count % 12 == 0) {
+            // the slow refresh: 5 a second (lost packets are repaired through the receipts
+            // anyway; 15 a second cost WiFi for a picture that stands still)
             SendTiles(frame);
         } else if (!last_frame.empty() && !tile_held) {
             // nothing new (e.g. emulation paused): still repair lost tiles and

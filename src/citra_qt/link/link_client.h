@@ -34,6 +34,18 @@ enum class State {
     Connected,
 };
 
+/// Kinds of messages; each can be switched off (3DS Link > Messages in Azahar), errors
+/// always show - the same kinds as in melonDS-Link
+enum class Note {
+    Always = 0,
+    Connection, // connected / lost
+    Save,       // save written to / loaded from the 3DS
+    Pause,      // game paused / continues
+    Battery,    // battery low
+};
+bool NoteShown(Note n);
+void SetNoteShown(Note n, bool shown);
+
 class Client {
 public:
     Client();
@@ -92,8 +104,18 @@ public:
     /// The list of save backups for the 3DS (ROM path, then one line per backup).
     bool SendBackupList(uint32_t token, const std::string& text);
     /// A message for the status bar of Azahar (from any thread).
-    void NotifyUser(const std::string& msg) {
-        PushMessage(msg);
+    void NotifyUser(const std::string& msg, Note kind = Note::Always) {
+        PushMessage(msg, kind);
+    }
+    /// The player is back in the game on the 3DS (after it was gone); true once.
+    bool TakeResumeRequest() {
+        return resume_wanted.exchange(false);
+    }
+    /// Settings the 3DS app needs (LINK_OPT_*): sent now and on every connect.
+    void SetOptions(uint32_t opts);
+    /// Counts the connections (things to do once per connection).
+    uint32_t ConnectionCount() const {
+        return connection_count.load();
     }
     /// The 3DS asks for the save backups of a game (its path in the game list); once.
     bool TakeBackupListRequest(std::string& path);
@@ -187,7 +209,10 @@ private:
     bool RequestLocked(uint16_t cmd, const void* payload, uint32_t len, uint16_t& status,
                        std::vector<uint8_t>* out);
     int PollEvents();
-    void PushMessage(const std::string& msg);
+    void PushMessage(const std::string& msg, Note kind = Note::Always);
+    std::atomic<bool> resume_wanted{false};
+    std::atomic<uint32_t> options{0};          // LINK_OPT_* (sent on every connect)
+    std::atomic<uint32_t> connection_count{0};
     void CloseSockets();
     void UpdateCapture();
 
@@ -394,8 +419,12 @@ void Log(const std::string& line);
 void SetLogging(bool on);
 bool Logging();
 
-/// A text in the language of Azahar's interface (German or English).
+/// A text in the chosen language (3DS Link > Language; until then Azahar's).
 std::string Text(const char* key);
+/// The language of the texts: "en", "de", or "" for that of Azahar's interface.
+void SetLanguage(const std::string& code);
+/// The language the texts are in now ("en" or "de").
+std::string Language();
 
 /// Puts a and b in the places of %1 and %2.
 std::string Format(std::string text, const std::string& a, const std::string& b = {});

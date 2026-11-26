@@ -34,6 +34,8 @@ add_library(citra_qt STATIC EXCLUDE_FROM_ALL
     link/link_client.h
     link/link_h264.cpp
     link/link_h264.h
+    link/link_osd.cpp
+    link/link_osd.h
     link/link_save.cpp
     link/link_save.h
     link/lz4/lz4.c

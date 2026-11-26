@@ -14,22 +14,29 @@
 #include <atomic>
 #include <optional>
 
+#include <functional>
 #include <map>
+#include <memory>
+#include <utility>
 #include <string>
 #include <thread>
 #include <mutex>
 #include <vector>
+#include "citra_qt/link/link_client.h"
 #include "citra_qt/link/link_save.h"
 
 class GameList;
 class QAction;
 class QLabel;
 class QMainWindow;
+class QMenu;
 class QSettings;
 class QTimer;
 class QWidget;
 
 namespace Link {
+
+class Osd;
 
 class LinkUi : public QObject {
     Q_OBJECT
@@ -55,6 +62,30 @@ private:
     void HandleRemote();
     void LiveWrite();
     void FinishLiveWrite();
+    void Retranslate();  // the texts again (language changed)
+    void ShowHelp();     // "Features and controls"
+    void Console();      // pauses, battery hints, status and black on the picture
+    void ShowNote(const QString& text); // on the picture while a game runs, else the status bar
+    QWidget* RenderWidget();
+    bool WindowBig();    // fullscreen or a big window: the status may show
+
+    // texts of the menu (for another language)
+    std::vector<std::pair<QAction*, const char*>> texts;
+    std::vector<std::pair<QMenu*, const char*>> menus;
+    std::vector<std::function<void()>> relabel;
+    // connection / picture on the PC (as in melonDS-Link)
+    bool pause_on_loss = true;
+    bool pause_on_lid = true;
+    bool blackout = false;
+    int status_mode = 0;      // 0 off, 1 always, 2 moving, 3.. every 5/10/20/30/60 min, 8 wandering
+    bool status_battery = true, status_wifi = true, status_big_only = true;
+    bool paused_by_loss = false, paused_by_lid = false;
+    State last_state = State::Disconnected;
+    int battery_warned = 101;  // lowest battery hint given (101 = none)
+    qint64 status_shown_at = 0;
+    uint32_t status_conn = 0;
+    std::unique_ptr<Osd> osd;
+    QWidget* osd_render = nullptr;
 
     QMainWindow* window;
     QSettings* settings;
