@@ -72,6 +72,7 @@
 #endif
 #include "citra_qt/game_list.h"
 #include "citra_qt/hotkeys.h"
+#include "citra_qt/link/link_activity.h"
 #include "citra_qt/link/link_ui.h"
 #include "citra_qt/loading_screen.h"
 #include "citra_qt/movie/movie_play_dialog.h"
@@ -1765,6 +1766,7 @@ void GMainWindow::BootGame(const QString& filename) {
 }
 
 void GMainWindow::ShutdownGame() {
+    Link::Activity::End();
     if (!emulation_running) {
         return;
     }
@@ -2789,6 +2791,8 @@ void GMainWindow::OnResumeGame(bool first_start) {
 
     play_time_manager->SetProgramId(game_title_id);
     play_time_manager->Start();
+    // 3DS Link: the play time on this PC for Dashboard-Link
+    Link::Activity::Resume(game_title_id, game_title.toStdString());
 
     if (first_start) {
 #ifdef ENABLE_DISCORD_RPC
@@ -2817,6 +2821,7 @@ void GMainWindow::OnPauseGame() {
     qt_cameras->PauseCameras();
 
     play_time_manager->Stop();
+    Link::Activity::Pause();
 
     UpdateMenuState();
     AllowOSSleep();

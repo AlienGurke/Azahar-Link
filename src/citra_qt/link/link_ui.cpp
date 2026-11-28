@@ -37,6 +37,7 @@
 #include "citra_qt/link/link_client.h"
 #include "citra_qt/link/link_osd.h"
 #include "citra_qt/link/link_save.h"
+#include "citra_qt/link/link_activity.h"
 #include "citra_qt/link/link_ui.h"
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -218,6 +219,7 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
         };
         add_folder("folder_backups", [] { return BackupRoot(); });
         add_folder("folder_debug", [] { return LinkDir("Debug"); });
+        add_folder("folder_playtime", [] { return Activity::Folder(); });
     }
 
     // the settings, by topic
@@ -227,6 +229,8 @@ LinkUi::LinkUi(QMainWindow* window_) : QObject(window_), window(window_) {
     QMenu* video_menu = add_menu(menu, "group_video");
     QMenu* pc_menu = add_menu(menu, "group_pc");
     QMenu* save_menu = add_menu(menu, "group_saves");
+    QMenu* play_menu = add_menu(menu, "group_playtime");
+    add_check(play_menu, "opt_playtime", "playtime", [](bool on) { Activity::SetEnabled(on); });
 
     // defaults like melonDS Link: the save comes from the 3DS when a game starts and goes
     // back whenever the game saves and when it stops, without questions. Earlier versions
